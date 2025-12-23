@@ -118,29 +118,33 @@ sudo apt upgrade -y
 sudo apt install -y git curl wget nano build-essential
 ```
 
-#### Шаг 1.3: Установка Python 3.13+
+#### Шаг 1.3: Проверка версии Python
+
+Проверьте, установлен ли Python 3.13+:
 
 ```bash
-# Проверить версию Python (если установлен)
 python3 --version
+```
 
-# Если Python < 3.13 или не установлен, добавить PPA репозиторий
+**Если у вас уже установлен Python 3.13+ (вывод `Python 3.13.x`), пропустите этот шаг и переходите сразу к Шагу 1.4.**
+
+**ТОЛЬКО ЕСЛИ** Python < 3.13 или не установлен:
+
+```bash
+# 1. Добавить репозиторий (только для Ubuntu 20.04 - 24.04)
+# Примечание: На Ubuntu 24.10+ Python 3.13 может быть доступен без PPA
 sudo apt install -y software-properties-common
 sudo add-apt-repository ppa:deadsnakes/ppa -y
 sudo apt update
 
-# Установить Python 3.13 и необходимые модули
-sudo apt install -y python3.13 python3.13-venv python3.13-dev
+# 2. Установить Python 3.13 и модули
+sudo apt install -y python3.13 python3.13-venv python3.13-dev python3-pip
 
-# Установить pip для Python 3.13
-sudo apt install -y python3-pip
-
-# Обновить pip
+# 3. Обновить pip
 python3.13 -m pip install --upgrade pip
 
-# Проверить установку
+# 4. Проверить установку
 python3.13 --version
-pip3 --version
 ```
 
 #### Шаг 1.4: Установка Node.js и PM2
