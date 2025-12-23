@@ -1,0 +1,228 @@
+"""Main entry point for Sentinel AI Trading Bot."""
+
+import asyncio
+import sys
+from loguru import logger
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.interval import IntervalTrigger
+
+from config import settings
+from core.engine import TradingEngine
+from providers.bybit import BybitProvider
+from providers.grok import GrokProvider
+from services.analyzer import Analyzer
+from services.risk_manager import RiskManager
+from storage.state_manager import StateManager
+
+
+def setup_logging():
+    """Configure loguru logging."""
+    logger.remove()  # Remove default handler
+    
+    # Console logging
+    logger.add(
+        sys.stdout,
+        level=settings.log_level,
+        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan> - <level>{message}</level>"
+    )
+    
+    # File logging with rotation
+    logger.add(
+        "logs/sentinel_{time:YYYY-MM-DD}.log",
+        rotation=settings.log_rotation,
+        retention=settings.log_retention,
+        level=settings.log_level,
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function} - {message}"
+    )
+    
+    logger.info("Logging configured")
+
+
+async def run_daily_screening(engine: TradingEngine, analyzer: Analyzer, ai_provider: GrokProvider, exchange: BybitProvider):
+    """
+    Daily screening job to select the most promising symbols.
+    
+    Args:
+        engine: Trading engine instance
+        analyzer: Analyzer instance
+        ai_provider: Grok provider instance  
+        exchange: Exchange provider instance
+    """
+    try:
+        logger.info("="*80)
+        logger.info("STARTING DAILY SCREENING")
+        logger.info("="*80)
+        
+        # Step 1: Scan top volume coins
+        top_coins = await analyzer.scan_top_volume_coins(
+            exchange=exchange,
+            limit=settings.screener_top_n,
+            quote_currency="USDT"
+        )
+        
+        if not top_coins:
+            logger.warning("No coins found during screening, keeping current symbols")
+            return
+        
+        logger.info(f"Found {len(top_coins)} top volume coins")
+        
+        # Step 2: Calculate screening metrics (7-day ATR)
+        candidates = await analyzer.calculate_screening_metrics(
+            exchange=exchange,
+            symbols=top_coins,
+            lookback_days=7
+        )
+        
+        if not candidates:
+            logger.warning("No valid candidates after metric calculation, keeping current symbols")
+            return
+        
+        logger.info(f"Calculated metrics for {len(candidates)} candidates")
+        
+        # Step 3: Use Grok to select best symbols
+        selected_symbols = await ai_provider.select_trading_symbols(
+            candidates=candidates,
+            max_symbols=settings.screener_max_symbols
+        )
+        
+        if not selected_symbols:
+            logger.warning("Grok did not select any symbols, keeping current symbols")
+            return
+        
+        logger.success(
+            f"Daily screening complete. Selected symbols: {', '.join(selected_symbols)}"
+        )
+        
+        # Step 4: Update engine's active symbols
+        engine.update_active_symbols(selected_symbols)
+        
+        logger.info("="*80)
+        logger.info("DAILY SCREENING COMPLETED")
+        logger.info("="*80)
+        
+    except Exception as e:
+        logger.error(f"Error in daily screening: {e}", exc_info=True)
+
+
+async def main():
+    """Main application entry point."""
+    
+    # Setup logging
+    setup_logging()
+    
+    logger.info("=" * 80)
+    logger.info("SENTINEL AI TRADING BOT WITH DAILY SCREENER")
+    logger.info("=" * 80)
+    logger.info(f"Version: MVP 2.0")
+    logger.info(f"Daily Screening: Enabled (every {settings.screener_interval_hours}h)")
+    logger.info(f"Top N Coins: {settings.screener_top_n}")
+    logger.info(f"Max Symbols: {settings.screener_max_symbols}")
+    logger.info(f"Trading Timeframe: {settings.trading_timeframe}")
+    logger.info(f"Cycle Interval: {settings.cycle_interval_minutes} minutes")
+    logger.info(f"Dry Run Mode: {settings.dry_run}")
+    logger.info(f"Initial Balance: ${settings.trading_balance}")
+    logger.info("=" * 80)
+    
+    # Initialize components with dependency injection
+    logger.info("Initializing components...")
+    
+    # Exchange provider
+    exchange = BybitProvider(
+        api_key=settings.bybit_api_key,
+        api_secret=settings.bybit_api_secret,
+        testnet=settings.bybit_testnet
+    )
+    
+    # AI provider
+    ai_provider = GrokProvider(
+        api_key=settings.grok_api_key,
+        model=settings.grok_model
+    )
+    
+    # Services
+    analyzer = Analyzer()
+    risk_manager = RiskManager(
+        balance=settings.trading_balance,
+        stop_loss_pct=settings.stop_loss_pct,
+        min_risk_reward=settings.min_risk_reward
+    )
+    state_manager = StateManager(storage_path=settings.storage_path)
+    
+    # Trading engine (initially with fallback symbol)
+    initial_symbols = [settings.trading_symbol] if hasattr(settings, 'trading_symbol') else ["BTC/USDT"]
+    engine = TradingEngine(
+        exchange=exchange,
+        ai_provider=ai_provider,
+        analyzer=analyzer,
+        risk_manager=risk_manager,
+        state_manager=state_manager,
+        symbols=initial_symbols,
+        timeframe=settings.trading_timeframe,
+        dry_run=settings.dry_run
+    )
+    
+    # Initialize engine
+    await engine.initialize()
+    
+    logger.success("All components initialized successfully")
+    
+    # Setup scheduler
+    scheduler = AsyncIOScheduler()
+    
+    # Add daily screening job (runs every 24 hours)
+    scheduler.add_job(
+        run_daily_screening,
+        trigger=IntervalTrigger(hours=settings.screener_interval_hours),
+        args=[engine, analyzer, ai_provider, exchange],
+        id='daily_screening',
+        name='Daily Symbol Screening',
+        replace_existing=True
+    )
+    
+    # Add trading cycle job (runs every 30 minutes)
+    scheduler.add_job(
+        engine.run_cycle,
+        trigger=IntervalTrigger(minutes=settings.cycle_interval_minutes),
+        id='trading_cycle',
+        name='Trading Cycle',
+        replace_existing=True
+    )
+    
+    logger.info(
+        f"Scheduler configured: "
+        f"Screening every {settings.screener_interval_hours}h, "
+        f"Trading every {settings.cycle_interval_minutes}min"
+    )
+    
+    # Run daily screening immediately to select initial symbols
+    logger.info("Running initial daily screening...")
+    await run_daily_screening(engine, analyzer, ai_provider, exchange)
+    
+    # Start scheduler
+    scheduler.start()
+    logger.success("Scheduler started - bot is now running")
+    
+    try:
+        # Keep the application running
+        while True:
+            await asyncio.sleep(1)
+            
+    except (KeyboardInterrupt, SystemExit):
+        logger.warning("Shutdown signal received")
+        
+    finally:
+        # Cleanup
+        logger.info("Shutting down...")
+        scheduler.shutdown()
+        await engine.shutdown()
+        logger.success("Shutdown complete")
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Application terminated by user")
+    except Exception as e:
+        logger.critical(f"Critical error: {e}", exc_info=True)
+        sys.exit(1)
