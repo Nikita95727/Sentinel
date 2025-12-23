@@ -1,6 +1,6 @@
 """Main trading engine orchestrating all components."""
 
-from typing import Optional
+from typing import Optional, List, Dict
 from loguru import logger
 
 from core.base_exchange import BaseExchange

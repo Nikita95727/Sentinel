@@ -1,5 +1,6 @@
 """Bybit exchange provider using ccxt.pro."""
 
+import ccxt
 import ccxt.pro as ccxtpro
 from typing import Dict, List, Optional, Any
 from loguru import logger
@@ -75,10 +76,10 @@ class BybitProvider(BaseExchange):
             logger.debug(f"Fetched {len(ohlcv)} candles for {symbol} ({timeframe})")
             return ohlcv
             
-        except ccxtpro.NetworkError as e:
+        except ccxt.NetworkError as e:
             logger.error(f"Network error fetching OHLCV for {symbol}: {e}")
             raise
-        except ccxtpro.ExchangeError as e:
+        except ccxt.ExchangeError as e:
             logger.error(f"Exchange error fetching OHLCV for {symbol}: {e}")
             raise
         except Exception as e:
@@ -103,12 +104,12 @@ class BybitProvider(BaseExchange):
             free_balance = balance.get('free', {}).get(currency, 0.0)
             
             logger.debug(f"Balance for {currency}: {free_balance}")
-            return float(free_balance)
+            return float(free_balance or 0.0)
             
-        except ccxtpro.NetworkError as e:
+        except ccxt.NetworkError as e:
             logger.error(f"Network error fetching balance: {e}")
             raise
-        except ccxtpro.ExchangeError as e:
+        except ccxt.ExchangeError as e:
             logger.error(f"Exchange error fetching balance: {e}")
             raise
         except Exception as e:
@@ -148,13 +149,13 @@ class BybitProvider(BaseExchange):
             logger.info(f"Market {side} order created: {symbol} amount={amount}, order_id={order.get('id')}")
             return order
             
-        except ccxtpro.InsufficientFunds as e:
+        except ccxt.InsufficientFunds as e:
             logger.error(f"Insufficient funds for order: {e}")
             raise
-        except ccxtpro.NetworkError as e:
+        except ccxt.NetworkError as e:
             logger.error(f"Network error creating order: {e}")
             raise
-        except ccxtpro.ExchangeError as e:
+        except ccxt.ExchangeError as e:
             logger.error(f"Exchange error creating order: {e}")
             raise
         except Exception as e:
@@ -179,10 +180,10 @@ class BybitProvider(BaseExchange):
             logger.debug(f"Fetched {len(orders)} open orders")
             return orders
             
-        except ccxtpro.NetworkError as e:
+        except ccxt.NetworkError as e:
             logger.error(f"Network error fetching open orders: {e}")
             raise
-        except ccxtpro.ExchangeError as e:
+        except ccxt.ExchangeError as e:
             logger.error(f"Exchange error fetching open orders: {e}")
             raise
         except Exception as e:
@@ -208,13 +209,13 @@ class BybitProvider(BaseExchange):
             logger.info(f"Order cancelled: {order_id}")
             return result
             
-        except ccxtpro.OrderNotFound as e:
+        except ccxt.OrderNotFound as e:
             logger.error(f"Order not found: {e}")
             raise
-        except ccxtpro.NetworkError as e:
+        except ccxt.NetworkError as e:
             logger.error(f"Network error cancelling order: {e}")
             raise
-        except ccxtpro.ExchangeError as e:
+        except ccxt.ExchangeError as e:
             logger.error(f"Exchange error cancelling order: {e}")
             raise
         except Exception as e:
@@ -239,10 +240,10 @@ class BybitProvider(BaseExchange):
             logger.debug(f"Ticker for {symbol}: last={ticker.get('last')}")
             return ticker
             
-        except ccxtpro.NetworkError as e:
+        except ccxt.NetworkError as e:
             logger.error(f"Network error fetching ticker: {e}")
             raise
-        except ccxtpro.ExchangeError as e:
+        except ccxt.ExchangeError as e:
             logger.error(f"Exchange error fetching ticker: {e}")
             raise
         except Exception as e:
