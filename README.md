@@ -16,7 +16,7 @@
 
 ## 📋 Требования
 
-- Python 3.10+
+- Python 3.13+
 - Аккаунт Bybit с API ключами
 - API ключ Grok (x.ai)
 - Минимум $10 на Bybit Spot счету
@@ -118,28 +118,28 @@ sudo apt upgrade -y
 sudo apt install -y git curl wget nano build-essential
 ```
 
-#### Шаг 1.3: Установка Python 3.10+
+#### Шаг 1.3: Установка Python 3.13+
 
 ```bash
 # Проверить версию Python (если установлен)
 python3 --version
 
-# Если Python < 3.10 или не установлен, добавить PPA репозиторий
+# Если Python < 3.13 или не установлен, добавить PPA репозиторий
 sudo apt install -y software-properties-common
 sudo add-apt-repository ppa:deadsnakes/ppa -y
 sudo apt update
 
-# Установить Python 3.10 и необходимые модули
-sudo apt install -y python3.10 python3.10-venv python3.10-dev
+# Установить Python 3.13 и необходимые модули
+sudo apt install -y python3.13 python3.13-venv python3.13-dev
 
-# Установить pip для Python 3.10
+# Установить pip для Python 3.13
 sudo apt install -y python3-pip
 
 # Обновить pip
-python3.10 -m pip install --upgrade pip
+python3.13 -m pip install --upgrade pip
 
 # Проверить установку
-python3.10 --version
+python3.13 --version
 pip3 --version
 ```
 
