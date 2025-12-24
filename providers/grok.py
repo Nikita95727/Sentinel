@@ -563,12 +563,12 @@ CRITICAL: Never output anything except the JSON object. No markdown, no code blo
                     continue
                 else:
                     logger.error(f"Grok API network error after {max_retries} attempts: {e}")
-            raise
+                    raise
                     
-        except Exception as e:
+            except Exception as e:
                 # Don't retry on other errors (validation, parsing, etc.)
                 logger.error(f"Error calling Grok API: {e}")
-            raise
+                raise
         
         # Should not reach here, but just in case
         raise Exception(f"Failed to call Grok API after {max_retries} attempts")
