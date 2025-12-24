@@ -780,7 +780,10 @@ CRITICAL: Never output anything except the JSON object. No markdown, no code blo
                 reasoning = "No reasoning provided by AI"
             
             # Validate risk_level
-            risk_level = str(data.get("risk_level", "medium")).lower().strip()
+            risk_level_raw = data.get("risk_level", "medium")
+            if risk_level_raw is None:
+                risk_level_raw = "medium"
+            risk_level = str(risk_level_raw).lower().strip()
             valid_risk_levels = ["low", "medium", "high"]
             if risk_level not in valid_risk_levels:
                 logger.warning(f"Invalid risk_level '{risk_level}', defaulting to 'medium'.")
@@ -867,7 +870,8 @@ CRITICAL: Never output anything except the JSON object. No markdown, no code blo
         current_price = market_data.get("price", 0)
         trend_strength = technical_indicators.get("trend_strength", 0)
         volume_ratio = technical_indicators.get("volume_ratio", 1.0)
-        btc_trend = market_data.get("btc_trend", "").lower()
+        btc_trend_raw = market_data.get("btc_trend", "")
+        btc_trend = str(btc_trend_raw).lower() if btc_trend_raw is not None else ""
         
         # Validate BUY decisions
         if decision.action == "BUY":

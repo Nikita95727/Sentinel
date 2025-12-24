@@ -293,8 +293,8 @@ class TradingEngine:
             decision_id = decision.decision_id
             
             # Calculate constraints and action_space for this decision
-            constraints = self._calculate_constraints(symbol, current_price, indicators, market_data)
-            action_space = self._calculate_action_space(symbol, current_position, indicators, constraints)
+            constraints = self._get_constraints(symbol, current_price, indicators, market_data)
+            action_space = self._get_action_space(symbol, current_position)
             
             # Add constraints and action_space to decision context
             if decision.additional_context is None:
