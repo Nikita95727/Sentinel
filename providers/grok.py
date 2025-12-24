@@ -938,24 +938,12 @@ Output: {"selected_coins": ["ETHUSDT"], "reasoning": "Good liquidity, neutral RS
 
 Если не уверен или данных недостаточно — верни пустой список selected_coins."""
 
-            # Build candidates description with market phase
-            candidates_text = f"\n\nТекущая рыночная фаза: {market_phase}. Учитывай это при выборе.\n\n"
-            candidates_text += "CANDIDATES:\n"
-            for i, candidate in enumerate(filtered_candidates[:20], 1):  # Limit to top 20
-                candidates_text += (
-                    f"{i}. {candidate['symbol']}: "
-                    f"Volume=${candidate['volume_24h']:,.0f}, "
-                    f"Price=${candidate['price']:.2f}, "
-                    f"24h Change={candidate['change_pct_24h']:+.2f}%, "
-                    f"Volatility(ATR)={candidate['atr_pct']:.2f}%, "
-                    f"RSI={candidate.get('rsi_30m', candidate.get('rsi', 50)):.1f}\n"
-                )
-            
-            user_message = (
-                f"Analyze these {len(filtered_candidates)} coins and select the best {max_symbols} "
-                f"for trading in the next 24 hours.{candidates_text}\n"
-                f"Select {max_symbols} symbol(s) and provide your reasoning."
-            )
+            # Build prompt using dedicated function
+            user_message = self._build_prompt({
+                'candidates': filtered_candidates,
+                'max_symbols': max_symbols,
+                'market_phase': market_phase
+            })
             
             # Call Grok API with low temperature for deterministic selection
             payload = {
@@ -1085,6 +1073,84 @@ Output: {"selected_coins": ["ETHUSDT"], "reasoning": "Good liquidity, neutral RS
         
         selection['symbols'] = filtered_symbols
         return selection
+
+    def _build_prompt(self, data: dict) -> str:
+        """
+        Build prompt for symbol selection with structured output instructions.
+        
+        Args:
+            data: Dictionary containing:
+                - candidates: List of candidate symbols with metrics
+                - max_symbols: Maximum number of symbols to select
+                - market_phase: Current market phase (bullish/bearish/sideways)
+        
+        Returns:
+            Complete prompt string for Grok
+        """
+        candidates = data.get('candidates', [])
+        max_symbols = data.get('max_symbols', 2)
+        market_phase = data.get('market_phase', 'sideways')
+        
+        prompt_parts = [
+            "You are a cryptocurrency market expert specializing in symbol selection.",
+            "",
+            "Your task is to analyze market data and select the 1-2 BEST symbols for short-term trading (24 hours).",
+            "",
+            "SELECTION CRITERIA:",
+            "1. High volume = good liquidity (prefer > $50M daily volume)",
+            "2. Moderate volatility (ATR 3-8%) = good profit potential without excessive risk",
+            "3. RSI between 35-65 = not overbought/oversold (avoid RSI > 80 or < 20)",
+            "4. Positive momentum indicators",
+            "5. Avoid symbols with extreme movements (pump & dump risk)",
+            "6. Consider current market phase when selecting",
+            "",
+            "FEW-SHOT EXAMPLES:",
+            "",
+            "Previous example (GOOD selection - coin later gained):",
+            "Input: BTC/USDT: Volume=$2.5B, Price=$43,200, 24h Change=+2.1%, ATR=3.2%, RSI=58.5, Market Phase: Bullish",
+            "Output: {\"selected_coins\": [\"BTCUSDT\"], \"reasoning\": \"High liquidity, optimal RSI zone (58.5), moderate volatility (ATR 3.2%), bullish market alignment. Strong fundamentals with stable momentum.\", \"confidence\": 0.88, \"risk_level\": \"low\", \"avoid_coins\": []}",
+            "",
+            "Previous example (BAD selection - coin later dumped):",
+            "Input: MEME/USDT: Volume=$45M, Price=$0.0012, 24h Change=+45%, ATR=25%, RSI=85.2, Market Phase: Bearish",
+            "Output: {\"selected_coins\": [], \"reasoning\": \"Extreme volatility (ATR 25%) indicates pump risk. Overbought RSI (85.2) suggests imminent correction. Low volume ($45M) below threshold. Bearish market phase adds additional risk.\", \"confidence\": 0.15, \"risk_level\": \"high\", \"avoid_coins\": [\"MEMEUSDT\"]}",
+            "",
+            f"Current market phase: {market_phase}. Consider this when making your selection.",
+            "",
+            "CANDIDATES:"
+        ]
+        
+        # Add candidates table
+        for i, candidate in enumerate(candidates[:20], 1):
+            prompt_parts.append(
+                f"{i}. {candidate['symbol']}: "
+                f"Volume=${candidate.get('volume_24h', 0):,.0f}, "
+                f"Price=${candidate.get('price', 0):.2f}, "
+                f"24h Change={candidate.get('change_pct_24h', 0):+.2f}%, "
+                f"Volatility(ATR)={candidate.get('atr_pct', 0):.2f}%, "
+                f"RSI={candidate.get('rsi_30m', candidate.get('rsi', 50)):.1f}"
+            )
+        
+        prompt_parts.extend([
+            "",
+            f"Analyze these {len(candidates)} coins and select the best {max_symbols} for trading in the next 24 hours.",
+            "",
+            "CRITICAL INSTRUCTION: Your response MUST be EXCLUSIVELY valid JSON in the exact format below.",
+            "Do NOT include any additional text, explanations, markdown formatting, code blocks, or greetings.",
+            "If no coin meets the criteria or confidence is low — return an empty array for selected_coins.",
+            "",
+            "REQUIRED JSON FORMAT:",
+            "{",
+            '  "selected_coins": ["BTCUSDT", "ETHUSDT"],',
+            '  "reasoning": "Brief but precise explanation of your choice (maximum 150 words)",',
+            '  "confidence": 0.82,',
+            '  "risk_level": "low|medium|high",',
+            '  "avoid_coins": ["XRPUSDT", "DOGEUSDT"]  // optional: coins you strongly recommend avoiding',
+            "}",
+            "",
+            "Remember: Output ONLY the JSON object. No markdown, no code blocks, no additional text."
+        ])
+        
+        return "\n".join(prompt_parts)
 
     def _parse_symbol_selection(self, response: str) -> Dict[str, Any]:
         """
