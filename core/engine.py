@@ -388,6 +388,50 @@ class TradingEngine:
                 }
             )
     
+    def _get_constraints(
+        self,
+        symbol: str,
+        current_price: float,
+        indicators: Dict[str, float],
+        market_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Calculate constraints for AI decision logging.
+        
+        Args:
+            symbol: Trading symbol
+            current_price: Current price
+            indicators: Technical indicators
+            market_data: Market data
+            
+        Returns:
+            Dictionary with constraints
+        """
+        return {
+            'max_trades_per_day': self.risk_manager.max_trades_per_day,
+            'max_risk_per_trade_pct': self.risk_manager.stop_loss_pct,
+            'cooldown_active': False,  # Placeholder, implement if needed
+            'symbol_blacklisted': not self.risk_manager.is_symbol_allowed(symbol),
+            'min_ai_confidence': 80.0,
+            'current_balance': self.risk_manager.balance
+        }
+    
+    def _get_action_space(self, symbol: str, current_position: Optional[dict]) -> List[str]:
+        """
+        Get available action space for current state.
+        
+        Args:
+            symbol: Trading symbol
+            current_position: Current position if exists
+            
+        Returns:
+            List of available actions
+        """
+        if current_position:
+            return ["SELL", "HOLD"]
+        else:
+            return ["BUY", "ABSTAIN"]
+    
     def _get_technical_filter_failure_reason(self, indicators: Dict[str, float], symbol: str) -> str:
         """
         Get reason why technical filter failed.
