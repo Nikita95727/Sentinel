@@ -14,6 +14,7 @@ from storage.state_manager import StateManager
 from utils.error_handler import (
     log_error_with_context, ErrorCode, ErrorCategory, ErrorSeverity
 )
+from core.order_state import Order, OrderState
 
 
 class TradingEngine:
@@ -67,6 +68,9 @@ class TradingEngine:
         self.positions: Dict[str, Optional[dict]] = {}
         for symbol in self.active_symbols:
             self.positions[symbol] = None
+        
+        # Track active orders with State Machine
+        self.active_orders: Dict[str, Order] = {}  # order_id -> Order
 
     def update_active_symbols(self, symbols: List[str]) -> None:
         """
