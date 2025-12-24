@@ -476,30 +476,30 @@ CRITICAL: Never output anything except the JSON object. No markdown, no code blo
         
         for attempt in range(max_retries):
             try:
-            payload = {
-                "model": self.model,
-                "messages": [
-                    {"role": "system", "content": self.get_system_prompt()},
-                    {"role": "user", "content": user_message}
-                ],
-                "temperature": 0.1,  # Very low temperature for deterministic trading decisions
-                "max_tokens": 500
-            }
+                payload = {
+                    "model": self.model,
+                    "messages": [
+                        {"role": "system", "content": self.get_system_prompt()},
+                        {"role": "user", "content": user_message}
+                    ],
+                    "temperature": 0.1,  # Very low temperature for deterministic trading decisions
+                    "max_tokens": 500
+                }
                 
                 import time
                 start_time = time.time()
-            
-            response = await self.client.post(
-                f"{self.base_url}/chat/completions",
-                json=payload
-            )
+                
+                response = await self.client.post(
+                    f"{self.base_url}/chat/completions",
+                    json=payload
+                )
                 
                 latency_ms = (time.time() - start_time) * 1000
-            
-            response.raise_for_status()
-            data = response.json()
-            
-            content = data['choices'][0]['message']['content']
+                
+                response.raise_for_status()
+                data = response.json()
+                
+                content = data['choices'][0]['message']['content']
                 
                 # Log API response details for debugging
                 usage = data.get('usage', {})
