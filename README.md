@@ -1,322 +1,340 @@
 # Sentinel AI Trading Bot
 
-Автономный торговый бот для криптовалют с использованием AI (Grok) для принятия решений.
+Autonomous cryptocurrency trading bot using AI (Grok) for decision-making.
 
-## 🚀 Особенности
+## ⚠️ IMPORTANT DISCLAIMER
 
-- **Динамический скрининг**: Каждые 24 часа сканирует топ-20 монет по объему
-- **7-дневная волатильность**: Рассчитывает ATR для оценки потенциала прибыли
-- **AI выбор активов**: Grok анализирует и выбирает 1-2 лучших монеты для торговли
-- **AI-powered анализ**: Использует Grok (x.ai) для интеллектуального анализа рынка
-- **Технический анализ**: RSI, EMA, ATR индикаторы через pandas_ta
-- **Обучение с обратной связью**: Бот учится на своих прошлых сделках
-- **Риск-менеджмент**: Автоматический расчет позиции, стоп-лосс 2%, динамический тейк-профит
-- **Асинхронная архитектура**: Полностью async с использованием ccxt.pro
-- **Модульный дизайн**: Легко добавить новые биржи или AI-провайдеры
+**THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED.**
 
-## 📋 Требования
+**CURRENT STATUS: MODEL TRAINING PHASE**
+
+This bot is currently in **Phase 0: Data Collection and Model Calibration**. The AI model is being trained and calibrated. Using this bot for real trading carries significant financial risks.
+
+**BY USING THIS SOFTWARE, YOU ACKNOWLEDGE AND AGREE THAT:**
+
+1. **NO WARRANTY**: The author and contributors disclaim all warranties, express or implied, including but not limited to warranties of merchantability, fitness for a particular purpose, and non-infringement.
+
+2. **FINANCIAL RISKS**: Cryptocurrency trading involves substantial risk of loss. You may lose some or all of your invested capital. Past performance does not guarantee future results.
+
+3. **NO LIABILITY**: The author, contributors, and distributors shall not be liable for any direct, indirect, incidental, special, consequential, or exemplary damages, including but not limited to financial losses, trading losses, or any other damages arising from the use or inability to use this software.
+
+4. **USE AT YOUR OWN RISK**: You are solely responsible for any trading decisions and financial outcomes. Always test thoroughly in dry-run mode before using real funds.
+
+5. **NOT FINANCIAL ADVICE**: This software is for educational and research purposes only. It does not constitute financial, investment, or trading advice.
+
+**DO NOT USE THIS BOT FOR REAL TRADING WITHOUT EXTENSIVE TESTING IN DRY-RUN MODE.**
+
+---
+
+## 🚀 Features
+
+- **Dynamic Screening**: Scans top-20 coins by volume every 24-48 hours
+- **7-Day Volatility Analysis**: Calculates ATR to assess profit potential
+- **AI Asset Selection**: Grok analyzes and selects 1-2 best coins for trading
+- **AI-Powered Analysis**: Uses Grok (x.ai) for intelligent market analysis
+- **Technical Analysis**: RSI, EMA, ATR indicators via pandas_ta
+- **Feedback Learning**: Bot learns from past trades
+- **Risk Management**: Automatic position sizing, 2% stop-loss, dynamic take-profit
+- **Asynchronous Architecture**: Fully async using ccxt.pro
+- **Modular Design**: Easy to add new exchanges or AI providers
+- **Daily File Rotation**: Trades stored in daily JSONL files for optimal AI learning
+
+## 📋 Requirements
 
 - Python 3.13+
-- Аккаунт Bybit с API ключами
-- API ключ Grok (x.ai)
-- Минимум $10 на Bybit Spot счету
+- Bybit account with API keys
+- Grok API key (x.ai)
+- Minimum $10 on Bybit Spot account
 
-## 🛠 Установка и запуск
+## 🛠 Installation and Setup
 
-### Быстрый старт (2 команды)
+### Quick Start (2 commands)
 
 ```bash
-# 1. Развертывание (первый раз)
+# 1. Deployment (first time)
 ./deploy.sh
 
-# 2. Запуск бота
+# 2. Start the bot
 ./start.sh
 ```
 
-Готово! Бот запущен в фоне.
+Done! Bot is running in the background.
 
-📖 **Подробная инструкция:** см. [QUICK_START.md](QUICK_START.md)
+📖 **Detailed instructions:** see [QUICK_START.md](QUICK_START.md)
 
-### Управление ботом
+### Bot Management
 
 ```bash
-./start.sh    # Запуск бота в фоне
-./stop.sh     # Остановка бота
-./status.sh   # Проверка статуса
+./start.sh    # Start bot in background
+./stop.sh     # Stop bot
+./status.sh   # Check status
 ```
 
-### Автоматическое развертывание
+### Automatic Deployment
 
-Скрипт `deploy.sh` автоматически:
-- Проверит и установит все зависимости
-- Создаст виртуальное окружение
-- Установит Python пакеты
-- Настроит конфигурацию
-- Опционально создаст systemd service
+The `deploy.sh` script automatically:
+- Checks and installs all dependencies
+- Creates virtual environment
+- Installs Python packages
+- Sets up configuration
+- Optionally creates systemd service
 
-### Ручная установка
+### Manual Installation
 
-#### 1. Клонирование и установка зависимостей
+#### 1. Clone and Install Dependencies
 
 ```bash
-# Создать виртуальное окружение
+# Create virtual environment
 python3 -m venv venv
 source venv/bin/activate  # macOS/Linux
-# или
+# or
 venv\Scripts\activate  # Windows
 
-# Установить зависимости
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-### 2. Настройка окружения
+#### 2. Environment Setup
 
 ```bash
-# Скопировать пример конфигурации
+# Copy example configuration
 cp .env.example .env
 
-# Отредактировать .env своими данными
+# Edit .env with your data
 nano .env
 ```
 
-Заполните следующие обязательные параметры:
-- `BYBIT_API_KEY`: Ваш Bybit API ключ
-- `BYBIT_API_SECRET`: Ваш Bybit API секрет
-- `GROK_API_KEY`: Ваш Grok API ключ
+Fill in the following required parameters:
+- `BYBIT_API_KEY`: Your Bybit API key
+- `BYBIT_API_SECRET`: Your Bybit API secret
+- `GROK_API_KEY`: Your Grok API key
 
-### 3. Первый запуск (тестовый режим)
+#### 3. First Run (Test Mode)
 
 ```bash
-# Убедитесь, что DRY_RUN=true в .env
+# Make sure DRY_RUN=true in .env
 python main.py
 ```
 
-## 🔧 Конфигурация
+## 🔧 Configuration
 
-Основные параметры в `.env`:
+Main parameters in `.env`:
 
-| Параметр | Описание | По умолчанию |
-|----------|----------|--------------|
-| `DRY_RUN` | Тестовый режим (без реальных сделок) | `true` |
-| `TRADING_SYMBOL` | Торговая пара | `BTC/USDT` |
-| `TRADING_TIMEFRAME` | Таймфрейм свечей | `30m` |
-| `TRADING_BALANCE` | Баланс для торговли | `10.0` |
-| `STOP_LOSS_PCT` | Процент стоп-лосса | `2.0` |
-| `CYCLE_INTERVAL_MINUTES` | Интервал циклов | `30` |
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `DRY_RUN` | Test mode (no real trades) | `true` |
+| `TRADING_SYMBOL` | Trading pair | `BTC/USDT` |
+| `TRADING_TIMEFRAME` | Candle timeframe | `30m` |
+| `TRADING_BALANCE` | Trading balance | `10.0` |
+| `STOP_LOSS_PCT` | Stop-loss percentage | `2.0` |
+| `CYCLE_INTERVAL_MINUTES` | Cycle interval | `120` |
+| `SCREENER_INTERVAL_HOURS` | Screening interval | `48` |
+| `SCREENER_MAX_SYMBOLS` | Max symbols to trade | `1` |
+| `STORAGE_PATH` | Storage directory | `storage/trades` |
+| `STORAGE_RETENTION_DAYS` | File retention period | `30` |
 
-## 📁 Структура проекта
+## 📁 Project Structure
 
 ```
 sentinel/
 ├── core/
-│   ├── base_exchange.py   # Interface для бирж
-│   ├── base_ai.py         # Interface для AI
-│   └── engine.py          # Основной движок
+│   ├── base_exchange.py   # Exchange interface
+│   ├── base_ai.py         # AI interface
+│   └── engine.py          # Main engine
 ├── providers/
-│   ├── bybit.py           # Bybit провайдер
-│   └── grok.py            # Grok AI провайдер
+│   ├── bybit.py           # Bybit provider
+│   └── grok.py            # Grok AI provider
 ├── services/
-│   ├── analyzer.py        # Технический анализ
-│   └── risk_manager.py    # Риск-менеджмент
+│   ├── analyzer.py        # Technical analysis
+│   ├── risk_manager.py    # Risk management
+│   ├── analytics.py       # Analytics and metrics
+│   ├── report_generator.py # Daily reports
+│   └── validator.py       # Safety validation
 ├── storage/
-│   └── state_manager.py   # Управление историей
-├── config.py              # Конфигурация
-├── main.py                # Точка входа
-└── requirements.txt       # Зависимости
+│   └── state_manager.py   # Trade history management
+├── utils/
+│   └── export_data.py     # Data export utilities
+├── config.py              # Configuration
+├── main.py                # Entry point
+└── requirements.txt       # Dependencies
 ```
 
-## 🚀 Деплой на VPS (PM2)
+## 🚀 VPS Deployment
 
-### 1. Подготовка VPS (Ubuntu 20.04/22.04)
+### 1. VPS Preparation (Ubuntu 20.04/22.04)
 
-#### Шаг 1.1: Подключение к VPS
+#### Step 1.1: Connect to VPS
 
 ```bash
-# Подключитесь к вашему VPS через SSH
-ssh root@ваш_ip_адрес
-# или
-ssh username@ваш_ip_адрес
+# Connect to your VPS via SSH
+ssh root@your_ip_address
+# or
+ssh username@your_ip_address
 ```
 
-#### Шаг 1.2: Обновление системы
+#### Step 1.2: Update System
 
 ```bash
-# Обновить списки пакетов
+# Update package lists
 sudo apt update
 
-# Обновить установленные пакеты
+# Upgrade installed packages
 sudo apt upgrade -y
 
-# Установить базовые утилиты
+# Install basic utilities
 sudo apt install -y git curl wget nano build-essential
 ```
 
-#### Шаг 1.3: Проверка версии Python
+#### Step 1.3: Check Python Version
 
-Проверьте, установлен ли Python 3.13+:
+Check if Python 3.13+ is installed:
 
 ```bash
 python3 --version
 ```
 
-**Если у вас уже установлен Python 3.13+ (вывод `Python 3.13.x`), пропустите этот шаг и переходите сразу к Шагу 1.4.**
+**If you already have Python 3.13+ (output `Python 3.13.x`), skip this step and go to Step 1.4.**
 
-**ТОЛЬКО ЕСЛИ** Python < 3.13 или не установлен:
+**ONLY IF** Python < 3.13 or not installed:
 
 ```bash
-# 1. Добавить репозиторий (только для Ubuntu 20.04 - 24.04)
-# Примечание: На Ubuntu 24.10+ Python 3.13 может быть доступен без PPA
+# 1. Add repository (Ubuntu 20.04 - 24.04)
+# Note: On Ubuntu 24.10+ Python 3.13 may be available without PPA
 sudo apt install -y software-properties-common
 sudo add-apt-repository ppa:deadsnakes/ppa -y
 sudo apt update
 
-# 2. Установить Python 3.13 и модули
+# 2. Install Python 3.13 and modules
 sudo apt install -y python3.13 python3.13-venv python3.13-dev python3-pip
 
-# 3. Обновить pip
+# 3. Update pip
 python3.13 -m pip install --upgrade pip
 
-# 4. Проверить установку
+# 4. Verify installation
 python3.13 --version
 ```
 
-#### Шаг 1.4: Установка Node.js и PM2
+### 2. Project Setup
 
 ```bash
-# Установить Node.js (LTS версия)
-curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
-sudo apt install -y nodejs
-
-# Проверить установку Node.js и npm
-node --version
-npm --version
-
-# Установить PM2 глобально
-sudo npm install -g pm2
-
-# Проверить установку PM2
-pm2 --version
-```
-
-### 2. Загрузка проекта
-
-```bash
-# Клонировать проект
+# Clone project
 git clone <your-repo-url> ~/sentinel
 cd ~/sentinel
 
-# Создать виртуальное окружение
+# Create virtual environment
 python3 -m venv venv
 source venv/bin/activate
 
-# Установить зависимости
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-### 3. Настройка
+### 3. Configuration
 
 ```bash
-# Создать .env из примера
+# Create .env from example
 cp .env.example .env
 
-# Отредактировать конфигурацию
+# Edit configuration
 nano .env
 ```
 
-⚠️ **ВАЖНО**: Установите `DRY_RUN=true` для первоначального тестирования!
+⚠️ **IMPORTANT**: Set `DRY_RUN=true` for initial testing!
 
-### 4. Запуск через PM2
-
-```bash
-# Создать PM2 конфигурацию
-cat > ecosystem.config.js << EOF
-module.exports = {
-  apps: [{
-    name: 'sentinel-bot',
-    script: 'venv/bin/python',
-    args: 'main.py',
-    cwd: '~/sentinel',
-    interpreter: 'none',
-    autorestart: true,
-    watch: false,
-    max_memory_restart: '500M',
-    env: {
-      PYTHONUNBUFFERED: '1'
-    }
-  }]
-}
-EOF
-
-# Запустить бота
-pm2 start ecosystem.config.js
-
-# Сохранить конфигурацию PM2
-pm2 save
-
-# Автозапуск при перезагрузке
-pm2 startup
-```
-
-### 5. Управление ботом
+### 4. Running the Bot
 
 ```bash
-# Просмотр логов
-pm2 logs sentinel-bot
+# Start bot in background
+./start.sh
 
-# Остановить бота
-pm2 stop sentinel-bot
+# Check status
+./status.sh
 
-# Перезапустить бота
-pm2 restart sentinel-bot
-
-# Статус
-pm2 status
-
-# Мониторинг
-pm2 monit
+# View logs
+tail -f logs/sentinel_*.log
 ```
 
-## 📊 Мониторинг
+## 📊 Monitoring
 
-Логи сохраняются в:
-- Консоль: `pm2 logs sentinel-bot`
-- Файлы: `logs/sentinel_YYYY-MM-DD.log`
-- История сделок: `storage/history.json`
+Logs are saved to:
+- Console: real-time output
+- Files: `logs/sentinel_YYYY-MM-DD.log`
+- Trade history: `storage/trades/trades_YYYY-MM-DD.jsonl`
+- Analytics: `storage/analytics.json`
 
-## ⚠️ Важные замечания
+## ⚠️ Important Notes
 
-1. **Тестирование**: Всегда начинайте с `DRY_RUN=true` и `BYBIT_TESTNET=true`
-2. **API ключи**: Используйте ключи только с правами на Spot торговлю
-3. **Риски**: Торговля криптовалютами сопряжена с рисками. Используйте только те средства, потерю которых вы можете себе позволить
-4. **Мониторинг**: Регулярно проверяйте логи и историю сделок
-5. **Обновления**: Следите за обновлениями библиотек в requirements.txt
+1. **Testing**: Always start with `DRY_RUN=true` and `BYBIT_TESTNET=true`
+2. **API Keys**: Use keys with Spot trading permissions only
+3. **Risks**: Cryptocurrency trading involves risks. Only use funds you can afford to lose
+4. **Monitoring**: Regularly check logs and trade history
+5. **Updates**: Keep track of library updates in requirements.txt
+6. **Model Training**: The bot is currently in training phase - use with extreme caution
 
-## 🔐 Безопасность
+## 🔐 Security
 
-- Никогда не коммитьте файл `.env` в Git
-- Используйте IP whitelist на Bybit для API ключей
-- Ограничьте разрешения API ключей только Spot торговлей
-- Регулярно меняйте API ключи
+- Never commit `.env` file to Git
+- Use IP whitelist on Bybit for API keys
+- Limit API key permissions to Spot trading only
+- Regularly rotate API keys
+- Use strong passwords and 2FA on exchange accounts
 
-## 📈 Масштабирование
+## 📈 Scaling
 
-Бот спроектирован для легкого расширения:
-- Добавление новых бирж: создайте класс, наследующий `BaseExchange`
-- Добавление новых AI: создайте класс, наследующий `BaseAI`
-- Мульти-символьная торговля: запустите несколько экземпляров с разными `.env`
+The bot is designed for easy expansion:
+- Adding new exchanges: create a class inheriting `BaseExchange`
+- Adding new AI: create a class inheriting `BaseAI`
+- Multi-symbol trading: run multiple instances with different `.env` files
 
-## 🆘 Поддержка
+## 🆘 Support
 
-При возникновении проблем:
-1. Проверьте логи: `pm2 logs sentinel-bot`
-2. Проверьте конфигурацию в `.env`
-3. Убедитесь, что API ключи валидны
-4. Проверьте баланс на Bybit
+If you encounter issues:
+1. Check logs: `tail -f logs/sentinel_*.log`
+2. Check configuration in `.env`
+3. Verify API keys are valid
+4. Check balance on Bybit
+5. Ensure all dependencies are installed
 
-## 📝 Лицензия
+## 📝 License
 
-MIT License - используйте на свой риск.
+MIT License - use at your own risk.
 
 ---
 
-**Disclaimer**: Данный бот предоставляется "как есть". Автор не несет ответственности за финансовые потери. Торгуйте на свой страх и риск.
+## ⚠️ LEGAL DISCLAIMER
+
+**THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.**
+
+**CURRENT STATUS: MODEL TRAINING PHASE**
+
+This trading bot is currently in **Phase 0: Data Collection and Model Calibration**. The AI model is being trained and calibrated using historical and real-time market data. The system is not yet fully optimized for production trading.
+
+**FINANCIAL RISKS:**
+
+- **Cryptocurrency trading involves substantial risk of loss**
+- **You may lose some or all of your invested capital**
+- **Past performance does not guarantee future results**
+- **AI models can make incorrect decisions**
+- **Market conditions can change rapidly**
+
+**NO LIABILITY:**
+
+The author, contributors, and distributors of this software:
+- **Shall not be liable** for any direct, indirect, incidental, special, consequential, or exemplary damages
+- **Shall not be responsible** for any financial losses, trading losses, or other damages
+- **Do not guarantee** any trading results or profitability
+- **Do not provide** financial, investment, or trading advice
+
+**YOUR RESPONSIBILITY:**
+
+- You are **solely responsible** for all trading decisions
+- You must **test extensively** in dry-run mode before using real funds
+- You must **understand** the risks involved in cryptocurrency trading
+- You must **comply** with all applicable laws and regulations in your jurisdiction
+- You must **not use** this software if you cannot afford to lose your investment
+
+**USE AT YOUR OWN RISK. BY USING THIS SOFTWARE, YOU ACKNOWLEDGE THAT YOU HAVE READ, UNDERSTOOD, AND AGREE TO BE BOUND BY THIS DISCLAIMER.**
+
+---
+
+**For questions or issues, please open an issue on GitHub (but remember: no support guarantees).**
