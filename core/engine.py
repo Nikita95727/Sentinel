@@ -108,6 +108,9 @@ class TradingEngine:
             for symbol in self.active_symbols:
                 await self._run_symbol_cycle(symbol)
             
+            # Monitor active orders (check status, update state machine)
+            await self.monitor_orders()
+            
         except Exception as e:
             log_error_with_context(
                 e, ErrorCode.BUSINESS_LOGIC_ERROR,
