@@ -419,7 +419,7 @@ CRITICAL: Never output anything except the JSON object. No markdown, no code blo
                 # Entry conditions
                 entry_indicators = entry.get('technical_indicators', {})
                 if entry_indicators:
-                prompt_parts.append(
+                    prompt_parts.append(
                         f"  Entry Conditions: RSI={entry_indicators.get('rsi', 0):.1f}, "
                         f"EMA20={entry_indicators.get('ema_20', 0):.2f}, "
                         f"EMA50={entry_indicators.get('ema_50', 0):.2f}"
