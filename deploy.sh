@@ -119,11 +119,18 @@ check_pip() {
     print_success "pip найден: $($PYTHON_CMD -m pip --version | head -n1)"
 }
 
-# Обновление pip
+# Обновление pip (только в venv, не системно)
 upgrade_pip() {
-    print_info "Обновление pip до последней версии..."
-    $PYTHON_CMD -m pip install --upgrade pip --quiet
-    print_success "pip обновлен"
+    print_info "Проверка pip..."
+    # Не обновляем системный pip, только в venv (будет обновлен после создания venv)
+    if [ -d "$VENV_DIR" ]; then
+        print_info "Обновление pip в виртуальном окружении..."
+        source "$VENV_DIR/bin/activate"
+        pip install --upgrade pip --quiet
+        print_success "pip обновлен в venv"
+    else
+        print_info "pip будет обновлен после создания venv"
+    fi
 }
 
 # Создание виртуального окружения
@@ -370,8 +377,8 @@ main() {
     check_root
     check_python
     check_pip
-    upgrade_pip
     create_venv
+    upgrade_pip  # Обновляем pip после создания venv
     install_dependencies
     create_directories
     setup_env
