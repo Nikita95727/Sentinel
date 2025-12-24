@@ -44,6 +44,7 @@ class TradingEngine:
             state_manager: State manager instance
             analytics: Analytics service instance
             ai_optimizer: AI optimizer with caching (optional, will be created if None)
+            event_bus: Event bus for event-driven communication (optional, uses global if None)
             symbols: List of trading pair symbols (default: ["BTC/USDT"])
             timeframe: Candle timeframe
             dry_run: If True, no real trades will be executed
@@ -57,6 +58,9 @@ class TradingEngine:
         self.active_symbols = symbols or ["BTC/USDT"]
         self.timeframe = timeframe
         self.dry_run = dry_run
+        
+        # Event bus (use provided or global instance)
+        self.event_bus = event_bus if event_bus is not None else event_bus
         
         # Initialize AI optimizer if not provided
         if ai_optimizer is None:
@@ -520,6 +524,18 @@ class TradingEngine:
                 order.id = f"dry_run_{datetime.now().timestamp()}"
                 order.transition_to(OrderState.SUBMITTED)
                 logger.info(f"[DRY RUN] Order simulated: {order.id} (state: {order.state.value})")
+                
+                # Emit order event (dry run)
+                await self.event_bus.emit(OrderEvent(
+                    order_id=order.id,
+                    symbol=symbol,
+                    side='buy',
+                    state=order.state.value,
+                    amount=order.amount,
+                    filled_amount=order.filled_amount,
+                    source="TradingEngine",
+                    metadata={'dry_run': True}
+                ))
             
             # Save position
             self.positions[symbol] = {
