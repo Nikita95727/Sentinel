@@ -149,13 +149,40 @@ class Analytics:
         try:
             data = await self._load_data()
             
-            # Find the decision
-            for decision in data['ai_decisions']:
-                if decision['timestamp'] == decision_timestamp:
-                    decision['executed'] = executed
-                    if trade_result:
-                        decision['trade_result'] = trade_result
-                    break
+            # Find the decision by decision_id (preferred) or timestamp (backward compatibility)
+            found_decision = None
+            for decision in data.get('ai_decisions', []):
+                if decision_id:
+                    # Try to find by decision_id in decision dict or top level
+                    decision_record_id = decision.get('decision_id')
+                    if not decision_record_id:
+                        decision_data = decision.get('decision', {})
+                        if isinstance(decision_data, dict):
+                            decision_record_id = decision_data.get('decision_id')
+                    if decision_record_id == decision_id:
+                        found_decision = decision
+                        break
+                elif decision_timestamp:
+                    # Backward compatibility: find by timestamp
+                    if decision.get('timestamp') == decision_timestamp:
+                        found_decision = decision
+                        break
+            
+            if not found_decision:
+                logger.warning(f"Decision not found for update (decision_id={decision_id}, timestamp={decision_timestamp})")
+                return
+            
+            # Update the found decision
+            found_decision['executed'] = executed
+            if trade_result:
+                found_decision['trade_result'] = trade_result
+            # Store decision_id if not already present
+            if decision_id:
+                if not found_decision.get('decision_id'):
+                    found_decision['decision_id'] = decision_id
+                decision_data = found_decision.get('decision', {})
+                if isinstance(decision_data, dict) and not decision_data.get('decision_id'):
+                    decision_data['decision_id'] = decision_id
             
             await self._save_data(data)
             
