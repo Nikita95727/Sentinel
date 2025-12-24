@@ -344,6 +344,30 @@ async def main():
         replace_existing=True
     )
     
+    # Add SQLite synchronization job (runs once per day at 00:30 UTC, after rotation)
+    if not settings.dry_run:
+        sqlite_scheduler = SQLiteScheduler(
+            state_manager=state_manager,
+            analytics=analytics,
+            sync_time="00:30"  # 30 minutes after midnight (after file rotation)
+        )
+        
+        async def sqlite_sync_job():
+            """Perform daily SQLite synchronization."""
+            try:
+                await sqlite_scheduler._daily_sync()
+            except Exception as e:
+                logger.error(f"Error in SQLite sync job: {e}")
+        
+        scheduler.add_job(
+            sqlite_sync_job,
+            trigger=CronTrigger(hour=0, minute=30),  # 00:30 UTC (after file rotation)
+            id='sqlite_daily_sync',
+            name='Daily SQLite Synchronization',
+            replace_existing=True
+        )
+        logger.info("SQLite daily sync scheduled at 00:30 UTC")
+    
     logger.info(
         f"Scheduler configured: "
         f"Screening every {settings.screener_interval_hours}h, "
