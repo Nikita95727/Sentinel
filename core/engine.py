@@ -5,7 +5,7 @@ from datetime import datetime
 from loguru import logger
 
 from core.base_exchange import BaseExchange
-from core.base_ai import BaseAI
+from core.base_ai import BaseAI, AIDecision
 from services.analyzer import Analyzer
 from services.risk_manager import RiskManager
 from services.analytics import Analytics
@@ -164,6 +164,27 @@ class TradingEngine:
             # Step 2.1: Technical filter - skip AI if signals don't pass
             if not self._technical_filter_passed(indicators, symbol):
                 logger.info(f"{symbol}: Technical filter failed - skipping AI call")
+                # Log ABSTAIN decision
+                abstain_reason = self._get_technical_filter_failure_reason(indicators, symbol)
+                abstain_decision = AIDecision(
+                    action="ABSTAIN",
+                    confidence=0.0,
+                    reasoning=f"Technical filter failed: {abstain_reason}",
+                    risk_level="high",
+                    additional_context={
+                        'abstain_reason': abstain_reason,
+                        'indicators': indicators,
+                        'filter_type': 'technical_pre_filter'
+                    }
+                )
+                if self.analytics:
+                    await self.analytics.record_ai_decision(
+                        symbol=symbol,
+                        decision=abstain_decision.to_dict(),
+                        market_data={'price': current_price, 'volume': ticker.get('baseVolume', 0)},
+                        technical_indicators=indicators,
+                        context={'abstain': True, 'decision_id': abstain_decision.decision_id}
+                    )
                 return
             
             # Step 3: Get current ticker for precise price
@@ -269,13 +290,29 @@ class TradingEngine:
             
             # Record AI decision for analytics and get decision_id
             decision_id = decision.decision_id
+            
+            # Calculate constraints and action_space for this decision
+            constraints = self._calculate_constraints(symbol, current_price, indicators, market_data)
+            action_space = self._calculate_action_space(symbol, current_position, indicators, constraints)
+            
+            # Add constraints and action_space to decision context
+            if decision.additional_context is None:
+                decision.additional_context = {}
+            decision.additional_context['constraints'] = constraints
+            decision.additional_context['action_space'] = action_space
+            
             if self.analytics:
                 await self.analytics.record_ai_decision(
                     symbol=symbol,
                     decision=decision.to_dict(),
                     market_data=market_data,
                     technical_indicators=indicators,
-                    context={'memory': memory, 'decision_id': decision_id}
+                    context={
+                        'memory': memory, 
+                        'decision_id': decision_id,
+                        'constraints': constraints,
+                        'action_space': action_space
+                    }
                 )
                 
                 # Record market condition
@@ -307,25 +344,36 @@ class TradingEngine:
                     market_data=market_data
                 )
             elif not decision.should_execute() and decision.action == "BUY":
-                reason = "confidence too low" if decision.confidence < 80.0 else "action not BUY"
+                # AI wanted to BUY but confidence too low - log as ABSTAIN
+                reason = "AI confidence too low" if decision.confidence < 80.0 else "action not BUY"
                 logger.info(f"{symbol}: NOT executing BUY - {reason} (confidence: {decision.confidence}%)")
+                
                 if self.analytics:
                     await self.analytics.update_decision_result(
                         decision_id=decision_id,
                         executed=False,
-                        trade_result={'reason': reason}
+                        trade_result={'reason': reason, 'action': 'ABSTAIN'}
+                    )
+            elif decision.action == "HOLD":
+                logger.info(f"{symbol}: HOLD decision - no action taken")
+                # Log HOLD as ABSTAIN variant
+                if self.analytics:
+                    await self.analytics.update_decision_result(
+                        decision_id=decision_id,
+                        executed=False,
+                        trade_result={'reason': 'HOLD decision', 'action': 'ABSTAIN'}
                     )
             elif current_position:
                 logger.debug(f"{symbol}: Checking exit conditions for open position")
                 await self._check_exit_conditions(symbol, current_price)
             else:
-                logger.info(f"{symbol}: Holding - no action taken")
-                # Update analytics that decision was not executed
+                # Unknown case - log as ABSTAIN
+                logger.info(f"{symbol}: No action taken - unknown state")
                 if self.analytics:
                     await self.analytics.update_decision_result(
                         decision_id=decision_id,
                         executed=False,
-                        trade_result={'reason': 'HOLD decision'}
+                        trade_result={'reason': 'unknown state', 'action': 'ABSTAIN'}
                     )
             
         except Exception as e:
@@ -338,6 +386,51 @@ class TradingEngine:
                     "has_position": self.positions.get(symbol) is not None
                 }
             )
+    
+    def _get_technical_filter_failure_reason(self, indicators: Dict[str, float], symbol: str) -> str:
+        """
+        Get reason why technical filter failed.
+        
+        Args:
+            indicators: Technical indicators
+            symbol: Trading symbol
+            
+        Returns:
+            Reason string for ABSTAIN decision
+        """
+        reasons = []
+        
+        # Check volume
+        volume = indicators.get('volume', 0)
+        volume_avg = indicators.get('volume_avg', 0)
+        if volume_avg > 0 and volume < volume_avg * 0.5:
+            reasons.append("low liquidity")
+        
+        # Check volatility
+        atr_pct = indicators.get('atr_pct', 0)
+        if atr_pct < 1.0:
+            reasons.append("low volatility")
+        elif atr_pct > 10.0:
+            reasons.append("excessive volatility")
+        
+        # Check RSI extremes
+        rsi = indicators.get('rsi', 50)
+        if rsi > 80:
+            reasons.append("overbought conditions")
+        elif rsi < 20:
+            reasons.append("oversold conditions")
+        
+        # Check conflicting indicators
+        ema_20 = indicators.get('ema_20', 0)
+        ema_50 = indicators.get('ema_50', 0)
+        price = indicators.get('current_price', 0)
+        if price > 0:
+            if (price > ema_20 > ema_50) and rsi < 50:
+                reasons.append("conflicting indicators")
+            elif (price < ema_20 < ema_50) and rsi > 50:
+                reasons.append("conflicting indicators")
+        
+        return ", ".join(reasons) if reasons else "technical filter criteria not met"
     
     def _technical_filter_passed(
         self, 
@@ -466,6 +559,33 @@ class TradingEngine:
             
             if not validation['is_valid']:
                 logger.warning(f"Trade validation failed for {symbol}: {validation['reasons']}")
+                # Log ABSTAIN decision for failed validation
+                abstain_reason = ", ".join(validation.get('reasons', []))
+                abstain_decision = AIDecision(
+                    action="ABSTAIN",
+                    confidence=decision.confidence,
+                    reasoning=f"Risk validation failed: {abstain_reason}",
+                    risk_level="high",
+                    additional_context={
+                        'abstain_reason': abstain_reason,
+                        'validation_failed': True,
+                        'filter_type': 'risk_validation'
+                    },
+                    decision_id=decision_id  # Link to original decision
+                )
+                if self.analytics:
+                    await self.analytics.record_ai_decision(
+                        symbol=symbol,
+                        decision=abstain_decision.to_dict(),
+                        market_data=market_data or {},
+                        technical_indicators=indicators or {},
+                        context={'abstain': True, 'decision_id': decision_id}
+                    )
+                    await self.analytics.update_decision_result(
+                        decision_id=decision_id,
+                        executed=False,
+                        trade_result={'reason': abstain_reason, 'action': 'ABSTAIN'}
+                    )
                 return
             
             logger.info(f"Executing BUY order for {symbol}")
@@ -538,14 +658,19 @@ class TradingEngine:
                     metadata={'dry_run': True}
                 ))
             
-            # Save position
+            # Save position with MFE/MAE tracking
             self.positions[symbol] = {
                 'symbol': symbol,
                 'entry_price': current_price,
                 'position_size': trade_params['position_size'],
                 'stop_loss': trade_params['stop_loss'],
                 'take_profit': trade_params['take_profit'],
-                'entry_reason': decision.reasoning
+                'entry_reason': decision.reasoning,
+                # MFE/MAE tracking
+                'mfe_price': current_price,  # Max Favorable Excursion (best price reached)
+                'mae_price': current_price,  # Max Adverse Excursion (worst price reached)
+                'mfe_percent': 0.0,  # Will be calculated at exit
+                'mae_percent': 0.0   # Will be calculated at exit
             }
             
             # Add to history with full context for Grok learning
@@ -658,6 +783,14 @@ class TradingEngine:
         try:
             position_size = position['position_size']
             entry_price = position['entry_price']
+            
+            # Get final MFE/MAE values
+            mfe_price = position.get('mfe_price', entry_price)
+            mae_price = position.get('mae_price', entry_price)
+            
+            # Calculate final MFE/MAE percentages
+            mfe_percent = ((mfe_price - entry_price) / entry_price) * 100 if entry_price > 0 else 0.0
+            mae_percent = ((mae_price - entry_price) / entry_price) * 100 if entry_price > 0 else 0.0
             
             # Calculate P&L
             pnl_pct = ((current_price - entry_price) / entry_price) * 100

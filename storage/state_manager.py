@@ -578,7 +578,9 @@ class StateManager:
         exit_reason: str,
         pnl: float,
         exit_indicators: Optional[Dict[str, float]] = None,
-        exit_market_data: Optional[Dict[str, Any]] = None
+        exit_market_data: Optional[Dict[str, Any]] = None,
+        mfe_percent: Optional[float] = None,
+        mae_percent: Optional[float] = None
     ) -> None:
         """
         Update a trade with exit information.
@@ -653,11 +655,13 @@ class StateManager:
                         "technical_indicators": exit_indicators or {}
                     }
                     
-                    # Update results
+                    # Update results with MFE/MAE
                     trade['results'] = {
                         "pnl_usdt": pnl,
                         "pnl_percent": pnl_pct,
-                        "holding_time_hours": None  # Could calculate if needed
+                        "holding_time_hours": None,  # Could calculate if needed
+                        "mfe_percent": mfe_percent if mfe_percent is not None else None,
+                        "mae_percent": mae_percent if mae_percent is not None else None
                     }
                     
                     # Update status and outcome

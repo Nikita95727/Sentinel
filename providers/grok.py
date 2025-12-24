@@ -211,6 +211,10 @@ CRITICAL: Never output anything except the JSON object. No markdown, no code blo
             # Parse response with validation
             decision = self._parse_response(response)
             
+            # Log raw and parsed response for analysis
+            logger.debug(f"Raw Grok response for {symbol}: {response[:500]}..." if len(response) > 500 else f"Raw Grok response for {symbol}: {response}")
+            logger.debug(f"Parsed decision for {symbol}: action={decision.action}, confidence={decision.confidence}%, thesis={decision.additional_context.get('thesis', 'N/A')[:100]}...")
+            
             # Logical validation of decision
             validation_result = self._validate_decision(
                 decision, symbol, market_data, technical_indicators

@@ -12,46 +12,61 @@ import pandas as pd
 class Analytics:
     """Advanced analytics service for trading performance and AI calibration."""
 
-    def __init__(self, storage_path: str = "storage/analytics.json"):
+    def __init__(self, storage_path: str = "storage/analytics"):
         """
-        Initialize analytics service.
+        Initialize analytics service with daily JSONL files.
         
         Args:
-            storage_path: Path to analytics JSON file
+            storage_path: Path to analytics directory (will create daily files inside)
         """
-        self.storage_path = Path(storage_path)
-        self.storage_path.parent.mkdir(parents=True, exist_ok=True)
+        self.storage_dir = Path(storage_path)
+        self.storage_dir.mkdir(parents=True, exist_ok=True)
         
-        if not self.storage_path.exists():
-            self._initialize_storage()
+        # Current date for file naming
+        from datetime import date
+        self._current_date: Optional[date] = None
+        self._current_file_path: Optional[Path] = None
+        
+        # Ensure daily rotation on init
+        self._ensure_daily_rotation()
 
-    def _initialize_storage(self) -> None:
-        """Initialize empty analytics storage."""
-        initial_data = {
-            'ai_decisions': [],
-            'market_conditions': [],
-            'performance_metrics': {
-                'daily_pnl': [],
-                'win_rate_by_confidence': {},
-                'win_rate_by_rsi': {},
-                'win_rate_by_trend': {},
-                'avg_holding_time': 0.0,
-                'sharpe_ratio': 0.0,
-                'max_drawdown': 0.0
-            },
-            'ai_learning_data': {
-                'successful_patterns': [],
-                'failed_patterns': [],
-                'confidence_calibration': []
-            },
-            'created_at': datetime.utcnow().isoformat(),
-            'last_updated': datetime.utcnow().isoformat()
-        }
+    def _get_current_file_path(self, event_type: str = "ai_decisions") -> Path:
+        """
+        Get path to current day's analytics file for specific event type.
         
-        with open(self.storage_path, 'w') as f:
-            json.dump(initial_data, f, indent=2)
+        Args:
+            event_type: Type of event ('ai_decisions', 'market_conditions', 'anomalies', 'decision_results')
         
-        logger.info(f"Initialized analytics storage at {self.storage_path}")
+        Returns:
+            Path to current day's JSONL file
+        """
+        from datetime import date
+        today = date.today()
+        
+        # Check if we need to rotate (new day)
+        if self._current_date != today:
+            self._ensure_daily_rotation()
+            self._current_date = today
+        
+        # Return current file path for this event type
+        filename = f"{event_type}_{today.isoformat()}.jsonl"
+        file_path = self.storage_dir / filename
+        
+        # Ensure file exists
+        if not file_path.exists():
+            file_path.touch()
+        
+        return file_path
+    
+    def _ensure_daily_rotation(self) -> None:
+        """Ensure daily file rotation is handled."""
+        from datetime import date
+        today = date.today()
+        
+        if self._current_file_path and self._current_date and self._current_date != today:
+            logger.info(f"Daily rotation: New day detected ({today.isoformat()})")
+        
+        self._current_date = today
 
     async def record_ai_decision(
         self,
@@ -72,11 +87,17 @@ class Analytics:
             context: Additional context (memory, etc.)
         """
         try:
-            data = await self._load_data()
+            # Extract decision_id from decision dict or context
+            decision_id = None
+            if isinstance(decision, dict):
+                decision_id = decision.get('decision_id')
+            if not decision_id and context:
+                decision_id = context.get('decision_id')
             
             record = {
                 'timestamp': datetime.utcnow().isoformat(),
                 'symbol': symbol,
+                'decision_id': decision_id,  # Store at top level for easy access
                 'decision': decision,
                 'market_data': market_data,
                 'technical_indicators': technical_indicators,
@@ -84,11 +105,12 @@ class Analytics:
                 'executed': False  # Will be updated when trade is executed
             }
             
-            data['ai_decisions'].append(record)
-            data['last_updated'] = datetime.utcnow().isoformat()
+            # Append to current day's JSONL file
+            current_file = self._get_current_file_path('ai_decisions')
+            async with aiofiles.open(current_file, 'a') as f:
+                await f.write(json.dumps(record, ensure_ascii=False) + '\n')
             
-            await self._save_data(data)
-            logger.debug(f"Recorded AI decision for {symbol}: {decision.get('action')}")
+            logger.debug(f"Recorded AI decision for {symbol}: {decision.get('action')} (decision_id: {decision_id})")
             
         except Exception as e:
             logger.error(f"Error recording AI decision: {e}")
@@ -110,8 +132,6 @@ class Analytics:
             volume: Current volume
         """
         try:
-            data = await self._load_data()
-            
             condition = {
                 'timestamp': datetime.utcnow().isoformat(),
                 'symbol': symbol,
@@ -120,13 +140,10 @@ class Analytics:
                 'indicators': indicators
             }
             
-            data['market_conditions'].append(condition)
-            
-            # Keep only last 10000 records to avoid file bloat
-            if len(data['market_conditions']) > 10000:
-                data['market_conditions'] = data['market_conditions'][-10000:]
-            
-            await self._save_data(data)
+            # Append to current day's JSONL file
+            current_file = self._get_current_file_path('market_conditions')
+            async with aiofiles.open(current_file, 'a') as f:
+                await f.write(json.dumps(condition, ensure_ascii=False) + '\n')
             
         except Exception as e:
             logger.error(f"Error recording market condition: {e}")
