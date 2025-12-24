@@ -29,6 +29,7 @@ class TradingEngine:
         state_manager: StateManager,
         analytics: Optional[Analytics] = None,
         ai_optimizer: Optional[AIOptimizer] = None,
+        event_bus: Optional[EventBus] = None,
         symbols: Optional[List[str]] = None,
         timeframe: str = "30m",
         dry_run: bool = True
@@ -60,7 +61,8 @@ class TradingEngine:
         self.dry_run = dry_run
         
         # Event bus (use provided or global instance)
-        self.event_bus = event_bus if event_bus is not None else event_bus
+        from core.events import event_bus as global_event_bus
+        self.event_bus = event_bus if event_bus is not None else global_event_bus
         
         # Initialize AI optimizer if not provided
         if ai_optimizer is None:
