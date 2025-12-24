@@ -428,8 +428,7 @@ class Analytics:
             output_path: Path to output CSV file
         """
         try:
-            data = await self._load_data()
-            decisions = data.get('ai_decisions', [])
+            decisions = await self._load_events('ai_decisions', days_back=None)
             
             if not decisions:
                 logger.warning("No decisions to export")
@@ -464,29 +463,8 @@ class Analytics:
         except Exception as e:
             logger.error(f"Error exporting to CSV: {e}")
 
-    async def _load_data(self) -> Dict[str, Any]:
-        """Load analytics data from file."""
-        try:
-            async with aiofiles.open(self.storage_path, 'r') as f:
-                content = await f.read()
-                return json.loads(content)
-        except Exception as e:
-            logger.error(f"Error loading analytics data: {e}")
-            return {
-                'ai_decisions': [],
-                'market_conditions': [],
-                'performance_metrics': {},
-                'ai_learning_data': {}
-            }
-
-    async def _save_data(self, data: Dict[str, Any]) -> None:
-        """Save analytics data to file."""
-        try:
-            data['last_updated'] = datetime.utcnow().isoformat()
-            async with aiofiles.open(self.storage_path, 'w') as f:
-                await f.write(json.dumps(data, indent=2))
-        except Exception as e:
-            logger.error(f"Error saving analytics data: {e}")
+    # Legacy methods removed - using JSONL format now
+    # _load_data and _save_data are no longer needed
 
     def detect_anomalies(
         self,
@@ -649,8 +627,7 @@ class Analytics:
             Dictionary with anomaly statistics
         """
         try:
-            data = await self._load_data()
-            anomalies = data.get('anomalies', [])
+            anomalies = await self._load_events('anomalies', days_back=30)
             
             if not anomalies:
                 return {
@@ -698,8 +675,7 @@ class Analytics:
             Dictionary with decision statistics
         """
         try:
-            data = await self._load_data()
-            decisions = data.get('ai_decisions', [])
+            decisions = await self._load_events('ai_decisions', days_back=30)
             
             if not decisions:
                 return {

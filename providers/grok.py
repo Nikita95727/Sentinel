@@ -742,20 +742,36 @@ CRITICAL: Never output anything except the JSON object. No markdown, no code blo
             
             # Validate action type and value
             action = str(data["action"]).upper().strip()
-            valid_actions = ["BUY", "SELL", "HOLD"]
+            valid_actions = ["BUY", "SELL", "HOLD", "ABSTAIN"]
             if action not in valid_actions:
                 logger.warning(f"Invalid action '{action}', expected one of {valid_actions}. Defaulting to HOLD.")
                 action = "HOLD"
             
-            # Validate confidence type and range
+            # Validate confidence type and range (support both 0-100 and 0.0-1.0)
             try:
                 confidence = float(data["confidence"])
+                # Normalize to 0-100 if in 0-1 range
+                if 0 <= confidence <= 1:
+                    confidence = confidence * 100
             except (ValueError, TypeError):
                 raise ValueError(f"Confidence must be a number, got: {type(data['confidence'])}")
             
             if not (0 <= confidence <= 100):
                 logger.warning(f"Confidence {confidence} out of range [0-100], clamping to valid range.")
                 confidence = max(0.0, min(100.0, confidence))
+            
+            # Extract structured fields (optional, with defaults)
+            thesis = str(data.get("thesis", "")).strip()
+            bull_case = str(data.get("bull_case", "")).strip()
+            bear_case = str(data.get("bear_case", "")).strip()
+            risk_flags = data.get("risk_flags", [])
+            if not isinstance(risk_flags, list):
+                risk_flags = []
+            time_horizon = str(data.get("time_horizon", "short-term (hours)")).strip()
+            invalid_if = str(data.get("invalid_if", "")).strip()
+            news_refs = data.get("news_refs", [])
+            if not isinstance(news_refs, list):
+                news_refs = []
             
             # Validate reasoning type
             reasoning = str(data.get("reasoning", "")).strip()
@@ -776,7 +792,13 @@ CRITICAL: Never output anything except the JSON object. No markdown, no code blo
                 f"confidence={confidence:.1f}%, risk={risk_level}"
             )
             
-            # Create AIDecision
+            # Log news references separately if present
+            if news_refs:
+                logger.debug(f"News references in decision: {len(news_refs)} items")
+                for news_ref in news_refs:
+                    logger.debug(f"  - {news_ref.get('title', 'N/A')} ({news_ref.get('source', 'N/A')})")
+            
+            # Create AIDecision with structured context
             return AIDecision(
                 action=action,
                 confidence=confidence,
@@ -784,7 +806,15 @@ CRITICAL: Never output anything except the JSON object. No markdown, no code blo
                 risk_level=risk_level,
                 additional_context={
                     "validation_passed": True,
-                    "original_response": response[:200]  # Store first 200 chars for debugging
+                    "raw_response": response,  # Store full raw response
+                    "parsed_response": data,  # Store parsed data
+                    "thesis": thesis,
+                    "bull_case": bull_case,
+                    "bear_case": bear_case,
+                    "risk_flags": risk_flags,
+                    "time_horizon": time_horizon,
+                    "invalid_if": invalid_if,
+                    "news_refs": news_refs  # Store news references separately
                 }
             )
             
