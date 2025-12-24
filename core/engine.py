@@ -71,6 +71,9 @@ class TradingEngine:
         
         # Track active orders with State Machine
         self.active_orders: Dict[str, Order] = {}  # order_id -> Order
+        
+        # Track active orders with State Machine
+        self.active_orders: Dict[str, Order] = {}  # order_id -> Order
 
     def update_active_symbols(self, symbols: List[str]) -> None:
         """
@@ -463,17 +466,57 @@ class TradingEngine:
             logger.info(f"Take-Profit: ${trade_params['take_profit']:.2f}")
             logger.info(f"Position size: {trade_params['position_size']:.6f}")
             
+            # Create Order object with State Machine
+            order = Order(
+                id=None,  # Will be assigned by exchange
+                symbol=symbol,
+                side='buy',
+                amount=trade_params['position_size'],
+                price=None,  # Market order
+                state=OrderState.PENDING,
+                metadata={
+                    'entry_price': current_price,
+                    'stop_loss': trade_params['stop_loss'],
+                    'take_profit': trade_params['take_profit'],
+                    'entry_reason': decision.reasoning,
+                    'ai_confidence': decision.confidence
+                }
+            )
+            
             if not self.dry_run:
-                # Execute real order
-                order = await self.exchange.create_market_order(
-                    symbol=symbol,
-                    side='buy',
-                    amount=trade_params['position_size']
-                )
-                
-                logger.info(f"Order executed: {order.get('id')}")
+                try:
+                    # Submit order to exchange
+                    exchange_order = await self.exchange.create_market_order(
+                        symbol=symbol,
+                        side='buy',
+                        amount=trade_params['position_size']
+                    )
+                    
+                    # Update order with exchange response
+                    order.exchange_id = exchange_order.get('id')
+                    order.id = exchange_order.get('id')
+                    order.transition_to(OrderState.SUBMITTED)
+                    
+                    # Store for monitoring
+                    if order.exchange_id:
+                        self.active_orders[order.exchange_id] = order
+                    
+                    logger.info(f"Order submitted: {order.exchange_id} (state: {order.state.value})")
+                except Exception as e:
+                    # Order rejected
+                    order.transition_to(OrderState.REJECTED, error=str(e))
+                    log_error_with_context(
+                        e, ErrorCode.EXCHANGE_ORDER_REJECTED,
+                        ErrorCategory.EXCHANGE_ERROR, ErrorSeverity.HIGH,
+                        "TradingEngine", symbol=symbol, operation="create_market_order",
+                        metadata={"order_id": order.id, "amount": trade_params['position_size']}
+                    )
+                    raise
             else:
-                logger.info("[DRY RUN] Order simulated (not executed)")
+                # Dry run: simulate order
+                order.id = f"dry_run_{datetime.now().timestamp()}"
+                order.transition_to(OrderState.SUBMITTED)
+                logger.info(f"[DRY RUN] Order simulated: {order.id} (state: {order.state.value})")
             
             # Save position
             self.positions[symbol] = {
@@ -603,17 +646,57 @@ class TradingEngine:
             logger.info(f"Exit: ${current_price:.2f}")
             logger.info(f"P&L: {pnl_pct:+.2f}% (${pnl_usdt:+.2f})")
             
+            # Create Order object with State Machine
+            sell_order = Order(
+                id=None,  # Will be assigned by exchange
+                symbol=symbol,
+                side='sell',
+                amount=position_size,
+                price=None,  # Market order
+                state=OrderState.PENDING,
+                metadata={
+                    'exit_price': current_price,
+                    'exit_reason': exit_reason,
+                    'entry_price': entry_price,
+                    'pnl_pct': pnl_pct,
+                    'pnl_usdt': pnl_usdt
+                }
+            )
+            
             if not self.dry_run:
-                # Execute real order
-                order = await self.exchange.create_market_order(
-                    symbol=symbol,
-                    side='sell',
-                    amount=position_size
-                )
-                
-                logger.info(f"Order executed: {order.get('id')}")
+                try:
+                    # Submit order to exchange
+                    exchange_order = await self.exchange.create_market_order(
+                        symbol=symbol,
+                        side='sell',
+                        amount=position_size
+                    )
+                    
+                    # Update order with exchange response
+                    sell_order.exchange_id = exchange_order.get('id')
+                    sell_order.id = exchange_order.get('id')
+                    sell_order.transition_to(OrderState.SUBMITTED)
+                    
+                    # Store for monitoring
+                    if sell_order.exchange_id:
+                        self.active_orders[sell_order.exchange_id] = sell_order
+                    
+                    logger.info(f"Order submitted: {sell_order.exchange_id} (state: {sell_order.state.value})")
+                except Exception as e:
+                    # Order rejected
+                    sell_order.transition_to(OrderState.REJECTED, error=str(e))
+                    log_error_with_context(
+                        e, ErrorCode.EXCHANGE_ORDER_REJECTED,
+                        ErrorCategory.EXCHANGE_ERROR, ErrorSeverity.HIGH,
+                        "TradingEngine", symbol=symbol, operation="create_market_order",
+                        metadata={"order_id": sell_order.id, "amount": position_size, "side": "sell"}
+                    )
+                    raise
             else:
-                logger.info("[DRY RUN] Order simulated (not executed)")
+                # Dry run: simulate order
+                sell_order.id = f"dry_run_{datetime.now().timestamp()}"
+                sell_order.transition_to(OrderState.SUBMITTED)
+                logger.info(f"[DRY RUN] Order simulated: {sell_order.id} (state: {sell_order.state.value})")
             
             # Update trade in history
             # Find the last open trade for this symbol
@@ -687,6 +770,111 @@ class TradingEngine:
                 }
             )
 
+    async def monitor_orders(self) -> None:
+        """
+        Monitor active orders and update their state.
+        
+        Checks exchange for order status and updates State Machine accordingly.
+        """
+        if not self.active_orders:
+            return
+        
+        orders_to_remove = []
+        
+        for order_id, order in list(self.active_orders.items()):
+            if not order.is_active():
+                # Order is in terminal state, remove from monitoring
+                orders_to_remove.append(order_id)
+                continue
+            
+            try:
+                # Check order status on exchange (only for real orders)
+                if not self.dry_run and order.exchange_id:
+                    try:
+                        # Try to fetch order status (if method exists)
+                        if hasattr(self.exchange, 'fetch_order'):
+                            exchange_order = await self.exchange.fetch_order(order.exchange_id, order.symbol)
+                            
+                            # Update filled amount
+                            filled = exchange_order.get('filled', 0)
+                            if filled > 0:
+                                order.update_filled(float(filled))
+                            
+                            # Check status
+                            status = exchange_order.get('status', 'unknown')
+                            if status == 'closed' or status == 'filled':
+                                if order.filled_amount >= order.amount:
+                                    order.transition_to(OrderState.FILLED)
+                                else:
+                                    # Partial fill
+                                    order.transition_to(OrderState.PARTIAL_FILLED)
+                            elif status == 'canceled' or status == 'cancelled':
+                                order.transition_to(OrderState.CANCELLED)
+                            elif status == 'rejected':
+                                order.transition_to(OrderState.REJECTED)
+                            
+                            logger.debug(
+                                f"Order {order_id} status: {status}, "
+                                f"filled: {order.filled_amount}/{order.amount}, "
+                                f"state: {order.state.value}"
+                            )
+                        else:
+                            # Fallback: check via get_open_orders
+                            open_orders = await self.exchange.get_open_orders(symbol=order.symbol)
+                            order_found = False
+                            for open_order in open_orders:
+                                if open_order.get('id') == order.exchange_id:
+                                    order_found = True
+                                    filled = open_order.get('filled', 0)
+                                    if filled > 0:
+                                        order.update_filled(float(filled))
+                                    break
+                            
+                            # If order not found in open orders, assume filled
+                            if not order_found and order.state == OrderState.SUBMITTED:
+                                order.transition_to(OrderState.FILLED)
+                                logger.debug(f"Order {order_id} not in open orders, assuming filled")
+                    except Exception as e:
+                        logger.debug(f"Could not fetch order {order_id} status: {e}")
+                        # Continue monitoring on next cycle
+                
+                # Remove terminal orders
+                if order.is_terminal():
+                    orders_to_remove.append(order_id)
+                    await self._on_order_completed(order)
+                    
+            except Exception as e:
+                logger.debug(f"Error monitoring order {order_id}: {e}")
+        
+        # Clean up terminal orders
+        for order_id in orders_to_remove:
+            if order_id in self.active_orders:
+                del self.active_orders[order_id]
+                logger.debug(f"Removed terminal order {order_id} from monitoring")
+    
+    async def _on_order_completed(self, order: Order) -> None:
+        """
+        Handle completed order (filled, cancelled, rejected, expired).
+        
+        Args:
+            order: Completed order
+        """
+        logger.info(
+            f"Order completed: {order.symbol} {order.side} "
+            f"{order.state.value} (filled: {order.filled_amount}/{order.amount})"
+        )
+        
+        if order.state == OrderState.FILLED and order.side == 'buy':
+            # Buy order filled - position opened
+            logger.debug(f"Buy order {order.id} filled - position should be open")
+        elif order.state == OrderState.FILLED and order.side == 'sell':
+            # Sell order filled - position closed
+            logger.debug(f"Sell order {order.id} filled - position should be closed")
+        elif order.state == OrderState.REJECTED:
+            logger.warning(f"Order {order.id} rejected: {order.error}")
+        elif order.state == OrderState.CANCELLED:
+            logger.info(f"Order {order.id} cancelled")
+    
     async def initialize(self) -> None:
         """Initialize all components."""
         logger.info("Initializing trading engine...")
