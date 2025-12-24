@@ -29,7 +29,7 @@ class TradingEngine:
         state_manager: StateManager,
         analytics: Optional[Analytics] = None,
         ai_optimizer: Optional[AIOptimizer] = None,
-        event_bus: Optional[EventBus] = None,
+        event_bus: Optional['EventBus'] = None,
         symbols: Optional[List[str]] = None,
         timeframe: str = "30m",
         dry_run: bool = True
