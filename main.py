@@ -18,6 +18,51 @@ from services.validator import SafetyValidator
 from storage.state_manager import StateManager
 
 
+async def determine_market_phase(exchange: BybitProvider) -> str:
+    """
+    Determine current market phase based on BTC 7-day performance.
+    
+    Args:
+        exchange: Exchange provider instance
+        
+    Returns:
+        Market phase: "bullish", "bearish", or "sideways"
+    """
+    try:
+        # Fetch BTC daily candles for last 7 days
+        btc_ohlcv = await exchange.fetch_ohlcv(
+            symbol="BTC/USDT",
+            timeframe='1d',
+            limit=8  # 7 days + current day
+        )
+        
+        if not btc_ohlcv or len(btc_ohlcv) < 8:
+            logger.warning("Insufficient BTC data for market phase determination")
+            return "sideways"
+        
+        # Get price 7 days ago and current price
+        price_7d_ago = float(btc_ohlcv[0][4])  # Close price 7 days ago
+        current_price = float(btc_ohlcv[-1][4])  # Current close price
+        
+        # Calculate 7-day change percentage
+        change_7d = ((current_price - price_7d_ago) / price_7d_ago) * 100
+        
+        # Determine phase
+        if change_7d > 10:
+            phase = "bullish"
+        elif change_7d < -10:
+            phase = "bearish"
+        else:
+            phase = "sideways"
+        
+        logger.debug(f"BTC 7-day change: {change_7d:+.2f}% → Market phase: {phase}")
+        return phase
+        
+    except Exception as e:
+        logger.error(f"Error determining market phase: {e}")
+        return "sideways"  # Safe default
+
+
 def setup_logging():
     """Configure loguru logging."""
     logger.remove()  # Remove default handler
@@ -82,10 +127,15 @@ async def run_daily_screening(engine: TradingEngine, analyzer: Analyzer, ai_prov
         
         logger.info(f"Calculated metrics for {len(candidates)} candidates")
         
+        # Step 2.5: Determine market phase based on BTC 7-day performance
+        market_phase = await determine_market_phase(exchange)
+        logger.info(f"Current market phase: {market_phase}")
+        
         # Step 3: Use Grok to select best symbols
         selected_symbols = await ai_provider.select_trading_symbols(
             candidates=candidates,
-            max_symbols=settings.screener_max_symbols
+            max_symbols=settings.screener_max_symbols,
+            market_phase=market_phase
         )
         
         if not selected_symbols:

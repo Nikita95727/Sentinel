@@ -482,7 +482,7 @@ CRITICAL: Never output anything except the JSON object. No markdown, no code blo
                     {"role": "system", "content": self.get_system_prompt()},
                     {"role": "user", "content": user_message}
                 ],
-                "temperature": 0.3,  # Lower temperature for more consistent trading decisions
+                "temperature": 0.1,  # Very low temperature for deterministic trading decisions
                 "max_tokens": 500
             }
                 
@@ -869,7 +869,8 @@ Provide your REVISED decision in JSON format as specified."""
     async def select_trading_symbols(
         self,
         candidates: List[Dict[str, Any]],
-        max_symbols: int = 2
+        max_symbols: int = 2,
+        market_phase: Optional[str] = None
     ) -> List[str]:
         """
         Use Grok to select the most promising trading symbols from candidates.
@@ -877,56 +878,93 @@ Provide your REVISED decision in JSON format as specified."""
         Args:
             candidates: List of symbol data with metrics
             max_symbols: Maximum number of symbols to select
+            market_phase: Current market phase (bullish/bearish/sideways)
             
         Returns:
             List of selected symbol names
         """
         try:
+            # Pre-filter: Remove coins with volume < $50M or ATR > 150% of average
+            filtered_candidates = self._pre_filter_candidates(candidates)
+            
+            if not filtered_candidates:
+                logger.warning("All candidates filtered out by pre-filters")
+                return []
+            
+            logger.info(f"Pre-filtered: {len(candidates)} -> {len(filtered_candidates)} candidates")
+            
+            # Determine market phase if not provided
+            if market_phase is None:
+                market_phase = "sideways"  # Default fallback
+            
             system_prompt = """You are a cryptocurrency market expert specializing in symbol selection.
 
 Your task is to analyze market data and select the 1-2 BEST symbols for short-term trading (24 hours).
 
 SELECTION CRITERIA:
-1. High volume = good liquidity
+1. High volume = good liquidity (prefer > $50M daily volume)
 2. Moderate volatility (ATR 3-8%) = good profit potential without excessive risk
-3. RSI between 35-65 = not overbought/oversold
+3. RSI between 35-65 = not overbought/oversold (avoid RSI > 80 or < 20)
 4. Positive momentum indicators
 5. Avoid symbols with extreme movements (pump & dump risk)
+6. Consider current market phase when selecting
 
-OUTPUT FORMAT (strict JSON only):
+FEW-SHOT EXAMPLES:
+
+Example 1 (GOOD selection - coin later gained):
+Input: BTC/USDT: Volume=$2.5B, Price=$43,200, 24h Change=+2.1%, ATR=3.2%, RSI=58.5
+Market Phase: Bullish
+Output: {"selected_coins": ["BTCUSDT"], "reasoning": "High liquidity, optimal RSI zone, moderate volatility, bullish market alignment", "confidence": 0.88, "risk_level": "low", "avoid_coins": []}
+
+Example 2 (BAD selection - coin later dumped):
+Input: MEME/USDT: Volume=$45M, Price=$0.0012, 24h Change=+45%, ATR=25%, RSI=85.2
+Market Phase: Bearish
+Output: {"selected_coins": [], "reasoning": "Extreme volatility (ATR 25%), overbought (RSI 85), pump risk, low volume", "confidence": 0.15, "risk_level": "high", "avoid_coins": ["MEMEUSDT"]}
+
+Example 3 (NEUTRAL selection - sideways):
+Input: ETH/USDT: Volume=$1.2B, Price=$2,450, 24h Change=-0.5%, ATR=4.1%, RSI=52.3
+Market Phase: Sideways
+Output: {"selected_coins": ["ETHUSDT"], "reasoning": "Good liquidity, neutral RSI, stable in sideways market, moderate risk", "confidence": 0.72, "risk_level": "medium", "avoid_coins": []}
+
+ВАЖНО: Отвечай ИСКЛЮЧИТЕЛЬНО валидным JSON в следующем формате, без какого-либо дополнительного текста, markdown, объяснений или кода:
+
 {
-    "selected_symbols": ["BTC/USDT", "ETH/USDT"],
-    "reasoning": "brief explanation for each selection"
+  "selected_coins": ["BTCUSDT", "ETHUSDT"],
+  "reasoning": "Краткое, но точное объяснение выбора (максимум 200 слов)",
+  "confidence": 0.85,
+  "risk_level": "low|medium|high",
+  "avoid_coins": ["SOLUSDT", "DOGEUSDT"]
 }
 
-Never output anything except the JSON object. No additional text, no markdown."""
+Если не уверен или данных недостаточно — верни пустой список selected_coins."""
 
-            # Build candidates description
-            candidates_text = "\n\nCANDIDATES:\n"
-            for i, candidate in enumerate(candidates[:20], 1):  # Limit to top 20
+            # Build candidates description with market phase
+            candidates_text = f"\n\nТекущая рыночная фаза: {market_phase}. Учитывай это при выборе.\n\n"
+            candidates_text += "CANDIDATES:\n"
+            for i, candidate in enumerate(filtered_candidates[:20], 1):  # Limit to top 20
                 candidates_text += (
                     f"{i}. {candidate['symbol']}: "
                     f"Volume=${candidate['volume_24h']:,.0f}, "
                     f"Price=${candidate['price']:.2f}, "
                     f"24h Change={candidate['change_pct_24h']:+.2f}%, "
                     f"Volatility(ATR)={candidate['atr_pct']:.2f}%, "
-                    f"RSI={candidate['rsi_30m']:.1f}\n"
+                    f"RSI={candidate.get('rsi_30m', candidate.get('rsi', 50)):.1f}\n"
                 )
             
             user_message = (
-                f"Analyze these {len(candidates)} coins and select the best {max_symbols} "
+                f"Analyze these {len(filtered_candidates)} coins and select the best {max_symbols} "
                 f"for trading in the next 24 hours.{candidates_text}\n"
                 f"Select {max_symbols} symbol(s) and provide your reasoning."
             )
             
-            # Call Grok API
+            # Call Grok API with low temperature for deterministic selection
             payload = {
                 "model": self.model,
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_message}
                 ],
-                "temperature": 0.4,
+                "temperature": 0.1,  # Low temperature for more deterministic selection
                 "max_tokens": 500
             }
             
@@ -939,15 +977,18 @@ Never output anything except the JSON object. No additional text, no markdown.""
             data = response.json()
             content = data['choices'][0]['message']['content'].strip()
             
-            # Parse response
+            # Parse response with new structured format
             selection = self._parse_symbol_selection(content)
             
+            # Post-filter: Remove coins with RSI > 80 or < 20
+            filtered_selection = self._post_filter_selection(selection, filtered_candidates)
+            
             logger.info(
-                f"Grok selected: {', '.join(selection['symbols'])} - "
-                f"{selection['reasoning']}"
+                f"Grok selected: {', '.join(filtered_selection['symbols'])} - "
+                f"{filtered_selection['reasoning']} (confidence: {filtered_selection.get('confidence', 0):.2f})"
             )
             
-            return selection['symbols'][:max_symbols]
+            return filtered_selection['symbols'][:max_symbols]
             
         except Exception as e:
             logger.error(f"Error in symbol selection: {e}")
@@ -956,15 +997,104 @@ Never output anything except the JSON object. No additional text, no markdown.""
             logger.warning(f"Using fallback selection: {', '.join(fallback)}")
             return fallback
 
+    def _pre_filter_candidates(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Pre-filter candidates before sending to Grok.
+        Remove coins with volume < $50M or ATR > 150% of average.
+        
+        Args:
+            candidates: List of candidate symbols
+            
+        Returns:
+            Filtered list of candidates
+        """
+        if not candidates:
+            return []
+        
+        # Calculate average ATR
+        atr_values = [c.get('atr_pct', 0) for c in candidates if c.get('atr_pct', 0) > 0]
+        avg_atr = sum(atr_values) / len(atr_values) if atr_values else 0
+        max_atr = avg_atr * 1.5  # 150% of average
+        
+        filtered = []
+        for candidate in candidates:
+            volume_24h = candidate.get('volume_24h', 0)
+            atr_pct = candidate.get('atr_pct', 0)
+            
+            # Filter: volume >= $50M and ATR <= 150% of average
+            if volume_24h >= 50_000_000 and atr_pct <= max_atr:
+                filtered.append(candidate)
+            else:
+                logger.debug(
+                    f"Filtered out {candidate.get('symbol', 'N/A')}: "
+                    f"volume=${volume_24h:,.0f} (< $50M) or ATR={atr_pct:.2f}% (> {max_atr:.2f}%)"
+                )
+        
+        return filtered
+    
+    def _post_filter_selection(
+        self, 
+        selection: Dict[str, Any], 
+        candidates: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """
+        Post-filter Grok's selection: remove coins with RSI > 80 or < 20.
+        
+        Args:
+            selection: Grok's selection result
+            candidates: Original candidates list for RSI lookup
+            
+        Returns:
+            Filtered selection
+        """
+        selected_symbols = selection.get('symbols', [])
+        if not selected_symbols:
+            return selection
+        
+        # Create lookup for RSI values
+        candidate_map = {c['symbol']: c for c in candidates}
+        
+        filtered_symbols = []
+        warnings = []
+        
+        for symbol in selected_symbols:
+            # Convert format if needed (BTCUSDT -> BTC/USDT)
+            lookup_symbol = symbol
+            if '/' not in symbol and 'USDT' in symbol:
+                # Try to find matching candidate
+                for cand_symbol in candidate_map.keys():
+                    if cand_symbol.replace('/', '') == symbol:
+                        lookup_symbol = cand_symbol
+                        break
+            
+            candidate = candidate_map.get(lookup_symbol, {})
+            rsi = candidate.get('rsi_30m', candidate.get('rsi', 50))
+            
+            # Filter: RSI should be between 20 and 80
+            if rsi > 80:
+                warnings.append(f"{symbol}: RSI {rsi:.1f} > 80 (overbought)")
+                logger.warning(f"⚠️  Post-filter: Ignoring {symbol} - RSI {rsi:.1f} > 80 (overbought)")
+            elif rsi < 20:
+                warnings.append(f"{symbol}: RSI {rsi:.1f} < 20 (oversold)")
+                logger.warning(f"⚠️  Post-filter: Ignoring {symbol} - RSI {rsi:.1f} < 20 (oversold)")
+            else:
+                filtered_symbols.append(symbol)
+        
+        if warnings:
+            selection['warnings'] = warnings
+        
+        selection['symbols'] = filtered_symbols
+        return selection
+    
     def _parse_symbol_selection(self, response: str) -> Dict[str, Any]:
         """
-        Parse Grok's symbol selection response.
+        Parse Grok's symbol selection response with new structured format.
         
         Args:
             response: JSON string from Grok
             
         Returns:
-            Dictionary with selected symbols and reasoning
+            Dictionary with selected symbols, reasoning, confidence, etc.
         """
         try:
             # Clean markdown if present
@@ -977,15 +1107,35 @@ Never output anything except the JSON object. No additional text, no markdown.""
             # Parse JSON
             data = json.loads(response)
             
+            # Support both old and new format
+            selected_coins = data.get('selected_coins', [])
+            selected_symbols = data.get('selected_symbols', [])
+            
+            # Convert coin format to symbol format if needed (BTCUSDT -> BTC/USDT)
+            symbols = []
+            for coin in (selected_coins if selected_coins else selected_symbols):
+                if '/' not in coin and 'USDT' in coin:
+                    # Convert BTCUSDT to BTC/USDT
+                    base = coin.replace('USDT', '')
+                    symbols.append(f"{base}/USDT")
+                else:
+                    symbols.append(coin)
+            
             return {
-                'symbols': data.get('selected_symbols', []),
-                'reasoning': data.get('reasoning', 'No reasoning provided')
+                'symbols': symbols,
+                'reasoning': data.get('reasoning', 'No reasoning provided'),
+                'confidence': data.get('confidence', 0.5),
+                'risk_level': data.get('risk_level', 'medium'),
+                'avoid_coins': data.get('avoid_coins', [])
             }
             
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse symbol selection: {e}")
             logger.debug(f"Response was: {response}")
+            # Fallback: try to extract symbols from text
             return {
                 'symbols': [],
-                'reasoning': f"Parse error: {str(e)}"
+                'reasoning': f"Parse error: {str(e)}",
+                'confidence': 0.0,
+                'risk_level': 'high'
             }
