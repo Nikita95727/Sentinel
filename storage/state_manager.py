@@ -42,7 +42,9 @@ class StateManager:
         exit_market_data: Optional[Dict[str, Any]] = None,
         ai_confidence: Optional[float] = None,
         stop_loss: Optional[float] = None,
-        take_profit: Optional[float] = None
+        take_profit: Optional[float] = None,
+        # Metadata for decision analysis
+        ai_metadata: Optional[Dict[str, Any]] = None
     ) -> None:
         """
         Add a new trade to history in JSONL format.
@@ -102,7 +104,17 @@ class StateManager:
                     # Additional context for learning
                     "market_session": entry_market_data.get('market_session') if entry_market_data else None,
                     "day_of_week": entry_market_data.get('day_of_week') if entry_market_data else None,
-                    "btc_trend": entry_market_data.get('btc_trend') if entry_market_data else None
+                    "btc_trend": entry_market_data.get('btc_trend') if entry_market_data else None,
+                    "btc_rsi": entry_market_data.get('btc_rsi') if entry_market_data else None,
+                    # Indicator changes (delta)
+                    "indicator_changes": {
+                        "rsi_change": entry_indicators.get('rsi_change') if entry_indicators else None,
+                        "ema_20_change": entry_indicators.get('ema_20_change') if entry_indicators else None,
+                        "ema_50_change": entry_indicators.get('ema_50_change') if entry_indicators else None,
+                    } if entry_indicators else None,
+                    # Volume trend
+                    "volume_trend": entry_indicators.get('volume_trend') if entry_indicators else None,
+                    "volume_ratio": entry_indicators.get('volume_ratio') if entry_indicators else None,
                 },
                 
                 # Exit information (if closed)
@@ -134,6 +146,27 @@ class StateManager:
                     outcome, entry_indicators, exit_indicators, 
                     entry_reason, exit_reason, pnl_pct
                 ) if status == 'closed' else None,
+                
+                # AI Decision Metadata (for analysis and learning)
+                "ai_metadata": {
+                    "full_prompt": ai_metadata.get('full_prompt') if ai_metadata else None,
+                    "raw_response": ai_metadata.get('raw_response') if ai_metadata else None,
+                    "api_latency_ms": ai_metadata.get('api_latency_ms') if ai_metadata else None,
+                    "tokens_used": ai_metadata.get('tokens_used') if ai_metadata else None,
+                    "prompt_tokens": ai_metadata.get('prompt_tokens') if ai_metadata else None,
+                    "completion_tokens": ai_metadata.get('completion_tokens') if ai_metadata else None,
+                    "validation_passed": ai_metadata.get('validation_passed') if ai_metadata else None,
+                    "validation_warnings": ai_metadata.get('validation_warnings') if ai_metadata else None,
+                    "is_fallback": ai_metadata.get('is_fallback') if ai_metadata else None,
+                } if ai_metadata else None,
+                
+                # Market context summary
+                "market_context": {
+                    "volatility_atr_pct": entry_indicators.get('atr_pct') if entry_indicators else None,
+                    "btc_correlation": entry_market_data.get('btc_trend') if entry_market_data else None,
+                    "market_session": entry_market_data.get('market_session') if entry_market_data else None,
+                    "day_of_week": entry_market_data.get('day_of_week') if entry_market_data else None,
+                } if entry_indicators or entry_market_data else None,
                 
                 # Metadata
                 "timestamp": datetime.utcnow().isoformat()

@@ -342,6 +342,9 @@ class TradingEngine:
             entry_indicators = indicators if indicators is not None else {}
             entry_market_data = market_data if market_data is not None else {}
             
+            # Extract AI metadata from decision
+            ai_metadata = decision.additional_context.get('ai_metadata') if decision.additional_context else None
+            
             await self.state_manager.add_trade(
                 symbol=symbol,
                 entry_price=current_price,
@@ -354,7 +357,8 @@ class TradingEngine:
                 entry_market_data=entry_market_data,
                 ai_confidence=decision.confidence,
                 stop_loss=trade_params['stop_loss'],
-                take_profit=trade_params['take_profit']
+                take_profit=trade_params['take_profit'],
+                ai_metadata=ai_metadata
             )
             
             # Update analytics that decision was executed

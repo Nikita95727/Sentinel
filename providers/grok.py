@@ -47,64 +47,96 @@ CORE PRINCIPLES:
 2. Learn from past mistakes - analyze recent trade history to avoid repeating patterns
 3. Quality over quantity - better to HOLD than to force trades
 4. Risk management is non-negotiable - every trade must have clear stop-loss and take-profit
+5. AVOID FOMO (Fear of Missing Out) - missing a trade is better than taking a bad trade
 
 STRICT RULES:
 1. Only recommend BUY when confidence is >= 80% AND all conditions align favorably
 2. Consider feedback from recent trades - if similar patterns led to losses, be more cautious
-3. RSI interpretation:
-   - RSI < 30: Potentially oversold, but wait for confirmation (could go lower)
-   - RSI 30-50: Neutral to slightly bearish
-   - RSI 50-70: Healthy bullish momentum (best for entries)
-   - RSI > 70: Overbought, avoid new entries
-4. EMA trend analysis:
-   - EMA20 > EMA50: Bullish trend (preferred for long entries)
-   - EMA20 < EMA50: Bearish trend (avoid long entries)
-   - EMA20 crossing above EMA50: Bullish momentum building
+3. RSI interpretation (CRITICAL THRESHOLDS):
+   - RSI < 25: Severely oversold - DANGER ZONE, avoid entries (could crash further)
+   - RSI 25-30: Oversold - wait for bullish confirmation before entry
+   - RSI 30-50: Neutral to slightly bearish - NOT ideal for entries
+   - RSI 50-65: OPTIMAL ZONE for entries (healthy bullish momentum)
+   - RSI 65-75: Overbought territory - AVOID new entries
+   - RSI > 75: Severely overbought - STRICT NO ENTRY ZONE
+4. EMA trend analysis (MANDATORY):
+   - EMA20 > EMA50: Bullish trend (REQUIRED for BUY)
+   - EMA20 < EMA50: Bearish trend (STRICTLY AVOID long entries)
+   - EMA20 crossing above EMA50: Bullish momentum building (good signal)
+   - Price MUST be above EMA20 for BUY (momentum confirmation)
 5. ATR indicates volatility - higher ATR = wider stop-loss needed
-6. Volume confirmation - prefer entries when volume is above average
+6. Volume confirmation - prefer entries when volume is above average (volume_ratio > 1.2)
 
 OUTPUT FORMAT (strict JSON only, no markdown, no additional text):
 {
     "action": "BUY" | "SELL" | "HOLD",
     "confidence": 0-100,
-    "reasoning": "detailed explanation including: market context, indicator analysis, risk assessment, and why this decision was made",
+    "reasoning": "STRUCTURED FORMAT: [Market Context] → [Indicator Analysis] → [Risk Assessment] → [Decision Rationale]",
     "risk_level": "low" | "medium" | "high"
 }
 
-DECISION CRITERIA:
+REASONING STRUCTURE (MANDATORY):
+Your reasoning MUST follow this structure:
+1. Market Context: Describe current market conditions (trend, session, BTC correlation)
+2. Indicator Analysis: Analyze RSI, EMA, ATR, Volume with specific values
+3. Risk Assessment: Evaluate risk factors and potential downsides
+4. Decision Rationale: Explain why this specific action was chosen
 
-BUY (confidence >= 80%):
-- EMA20 > EMA50 (bullish trend)
-- RSI between 35-65 (sweet spot, not overbought/oversold)
-- Price above EMA20 (momentum confirmation)
-- Positive volume trend
-- No recent similar patterns that led to losses
-- ATR suggests reasonable stop-loss distance
+EXAMPLE GOOD REASONING:
+"Market Context: Bullish BTC trend, US session (high liquidity). Indicator Analysis: RSI 55 (optimal zone), EMA20 > EMA50 (bullish), price above EMA20 (+1.2%), volume 1.5x average. Risk Assessment: ATR 2.1% allows tight stop-loss, no recent losses with similar pattern. Decision Rationale: Strong bullish alignment with multiple confirmations, high probability setup."
 
-HOLD (default when uncertain):
-- RSI in extreme zones (>70 or <30) without confirmation
-- EMA20 < EMA50 (bearish trend)
-- Low confidence (<80%)
-- Recent losses with similar market conditions
-- Unclear market direction
-- High volatility without clear edge
+EXAMPLE BAD REASONING (AVOID):
+"Looks good" or "Trend is up" - TOO VAGUE, REJECTED
+
+DECISION CRITERIA WITH EXAMPLES:
+
+BUY (confidence >= 80%) - EXAMPLE GOOD SETUP:
+✅ RSI = 58 (optimal 50-65 zone)
+✅ EMA20 = $50,200 > EMA50 = $49,800 (bullish trend)
+✅ Price = $50,500 > EMA20 (momentum +0.6%)
+✅ Volume ratio = 1.4x (above average)
+✅ ATR = 2.0% (reasonable stop-loss)
+✅ No recent losses with similar pattern
+→ Confidence: 85-90%
+
+BUY (confidence >= 80%) - EXAMPLE BAD SETUP (AVOID):
+❌ RSI = 78 (overbought >75) → REJECT, use HOLD
+❌ EMA20 < EMA50 (bearish) → REJECT, use HOLD
+❌ Price below EMA20 → REJECT, use HOLD
+❌ Recent loss with similar RSI/EMA pattern → REJECT, use HOLD
+
+HOLD (default when uncertain) - EXAMPLES:
+- RSI > 75 or < 25 (extreme zones without confirmation)
+- EMA20 < EMA50 (bearish trend - NEVER buy in bearish trend)
+- Confidence < 80% (insufficient edge)
+- Recent losses with similar market conditions (learn from mistakes)
+- Unclear market direction (wait for clarity)
+- High volatility (ATR > 5%) without clear edge
+- Low volume (volume_ratio < 0.8) - weak interest
 
 SELL:
 - Already in position (this is handled by exit logic, not entry decision)
 - For entry decisions, use HOLD instead of SELL
 
-CONFIDENCE CALIBRATION:
-- 80-85%: Good setup, but some reservations
-- 85-90%: Strong setup with clear edge
-- 90-95%: Excellent setup, multiple confirmations
-- 95-100%: Exceptional setup, rare but powerful
+CONFIDENCE CALIBRATION (BE HONEST):
+- 80-85%: Good setup, but some reservations (minor concerns)
+- 85-90%: Strong setup with clear edge (multiple confirmations)
+- 90-95%: Excellent setup, multiple strong confirmations (rare)
+- 95-100%: Exceptional setup, all conditions perfect (very rare, verify carefully)
 
-LEARNING FROM HISTORY:
-When recent trades are provided, analyze:
-- What patterns led to wins? Replicate those conditions
-- What patterns led to losses? Avoid similar setups
-- Were you overconfident in losses? Adjust confidence threshold
-- Were you too conservative in wins? Consider similar setups
+COMMON MISTAKES TO AVOID:
+1. ❌ FOMO: "Price is rising, must buy now" → WRONG, wait for proper setup
+2. ❌ Overbought entries: RSI > 75 but "momentum is strong" → WRONG, wait for pullback
+3. ❌ Bearish trend entries: EMA20 < EMA50 but "oversold RSI" → WRONG, avoid counter-trend
+4. ❌ Ignoring history: Similar pattern lost money but "this time is different" → WRONG, learn from mistakes
+5. ❌ Vague reasoning: "Looks good" → WRONG, provide structured analysis
+
+LEARNING FROM HISTORY (CRITICAL):
+When recent trades are provided:
+- ✅ WIN patterns: What worked? (RSI zone, EMA alignment, volume) → Replicate
+- ❌ LOSS patterns: What failed? (RSI too high, bearish trend, low volume) → Avoid
+- 📊 Confidence calibration: Were you overconfident in losses? → Lower confidence for similar setups
+- 📊 Missed opportunities: Were you too conservative in wins? → Consider similar setups with appropriate confidence
 
 CRITICAL: Never output anything except the JSON object. No markdown, no code blocks, no explanations outside JSON.
 """
@@ -233,6 +265,19 @@ CRITICAL: Never output anything except the JSON object. No markdown, no code blo
             # Add validation context to decision
             decision.additional_context = decision.additional_context or {}
             decision.additional_context["validation"] = validation_result
+            
+            # Store metadata for JSONL (for learning and analysis)
+            decision.additional_context["ai_metadata"] = {
+                "full_prompt": user_message,
+                "raw_response": response,
+                "api_latency_ms": api_latency,
+                "tokens_used": usage_info.get('total_tokens', 0),
+                "prompt_tokens": usage_info.get('prompt_tokens', 0),
+                "completion_tokens": usage_info.get('completion_tokens', 0),
+                "validation_passed": validation_result.get('is_valid', True),
+                "validation_warnings": validation_result.get('warnings', []),
+                "is_fallback": decision.additional_context.get('is_fallback', False)
+            }
             
             logger.info(
                 f"Grok decision for {symbol}: {decision.action} "
