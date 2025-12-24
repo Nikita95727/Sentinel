@@ -131,13 +131,15 @@ class PositionEvent(Event):
 @dataclass
 class ErrorEvent(Event):
     """Event for errors."""
-    error_code: str
-    error_message: str
-    component: str
-    severity: str
+    error_code: str = ""
+    error_message: str = ""
+    component: str = ""
+    severity: str = "medium"
     
     def __post_init__(self):
         self.event_type = EventType.ERROR
+        if not hasattr(self, 'metadata') or self.metadata is None:
+            self.metadata = {}
         self.metadata.update({
             'error_code': self.error_code,
             'error_message': self.error_message,
