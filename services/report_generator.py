@@ -34,6 +34,8 @@ class ReportGenerator:
             # Get performance metrics
             metrics = await self.analytics.calculate_performance_metrics()
             ai_analysis = await self.analytics.analyze_ai_performance()
+            anomaly_stats = await self.analytics.get_anomaly_statistics()
+            decision_stats = await self.analytics.get_decision_statistics()
             history = await self.state_manager.load_history()
             stats = history.get('statistics', {})
             

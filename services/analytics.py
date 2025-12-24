@@ -416,3 +416,259 @@ class Analytics:
         except Exception as e:
             logger.error(f"Error saving analytics data: {e}")
 
+    def detect_anomalies(
+        self,
+        decision: Dict[str, Any],
+        market_data: Dict[str, Any],
+        technical_indicators: Dict[str, float]
+    ) -> Dict[str, Any]:
+        """
+        Detect anomalies in AI decisions (stupid decisions).
+        
+        Args:
+            decision: AI decision (action, confidence, reasoning)
+            market_data: Current market data
+            technical_indicators: Technical indicators
+            
+        Returns:
+            Dictionary with anomaly flags and details
+        """
+        anomalies = {
+            'has_anomalies': False,
+            'flags': [],
+            'severity': 'none'  # 'low', 'medium', 'high'
+        }
+        
+        action = decision.get('action', '').upper()
+        confidence = decision.get('confidence', 0)
+        reasoning = decision.get('reasoning', '').lower()
+        
+        # Get indicators
+        rsi = technical_indicators.get('rsi', 0)
+        ema_20 = technical_indicators.get('ema_20', 0)
+        ema_50 = technical_indicators.get('ema_50', 0)
+        price = market_data.get('price', 0)
+        volume_ratio = technical_indicators.get('volume_ratio', 1.0)
+        
+        # Flag 1: BUY при bearish тренде
+        if action == 'BUY' and ema_20 < ema_50:
+            anomalies['has_anomalies'] = True
+            anomalies['flags'].append({
+                'type': 'bearish_trend_buy',
+                'description': f'BUY decision in bearish trend (EMA20={ema_20:.2f} < EMA50={ema_50:.2f})',
+                'severity': 'high'
+            })
+            if anomalies['severity'] != 'high':
+                anomalies['severity'] = 'high'
+        
+        # Flag 2: Высокий confidence при плохих условиях
+        if action == 'BUY' and confidence >= 85:
+            bad_conditions = []
+            
+            if rsi > 75:
+                bad_conditions.append(f'RSI overbought ({rsi:.1f} > 75)')
+            if rsi < 25:
+                bad_conditions.append(f'RSI oversold ({rsi:.1f} < 25)')
+            if price < ema_20:
+                bad_conditions.append(f'Price below EMA20 ({price:.2f} < {ema_20:.2f})')
+            if volume_ratio < 0.8:
+                bad_conditions.append(f'Low volume (ratio={volume_ratio:.2f} < 0.8)')
+            
+            if bad_conditions:
+                anomalies['has_anomalies'] = True
+                anomalies['flags'].append({
+                    'type': 'high_confidence_bad_conditions',
+                    'description': f'High confidence ({confidence}%) with bad conditions: {", ".join(bad_conditions)}',
+                    'severity': 'medium'
+                })
+                if anomalies['severity'] == 'none':
+                    anomalies['severity'] = 'medium'
+        
+        # Flag 3: Reasoning не соответствует решению
+        if action == 'BUY':
+            reasoning_negative = any(word in reasoning for word in ['bearish', 'oversold', 'decline', 'drop', 'fall', 'weak'])
+            if reasoning_negative and confidence >= 80:
+                anomalies['has_anomalies'] = True
+                anomalies['flags'].append({
+                    'type': 'reasoning_mismatch',
+                    'description': f'BUY decision with negative reasoning (confidence: {confidence}%)',
+                    'severity': 'medium'
+                })
+                if anomalies['severity'] == 'none':
+                    anomalies['severity'] = 'medium'
+        
+        # Flag 4: Противоречивые данные
+        if action == 'BUY':
+            contradictions = []
+            if rsi > 70 and 'bullish' in reasoning:
+                contradictions.append('RSI overbought but reasoning mentions bullish')
+            if ema_20 < ema_50 and 'trend' in reasoning and 'up' in reasoning:
+                contradictions.append('Bearish trend but reasoning mentions uptrend')
+            
+            if contradictions:
+                anomalies['has_anomalies'] = True
+                anomalies['flags'].append({
+                    'type': 'contradictory_data',
+                    'description': f'Contradictions: {", ".join(contradictions)}',
+                    'severity': 'low'
+                })
+                if anomalies['severity'] == 'none':
+                    anomalies['severity'] = 'low'
+        
+        return anomalies
+
+    async def record_anomaly(
+        self,
+        symbol: str,
+        decision: Dict[str, Any],
+        market_data: Dict[str, Any],
+        technical_indicators: Dict[str, float],
+        anomaly_data: Dict[str, Any]
+    ) -> None:
+        """
+        Record detected anomaly for monitoring.
+        
+        Args:
+            symbol: Trading pair symbol
+            decision: AI decision
+            market_data: Market data
+            technical_indicators: Technical indicators
+            anomaly_data: Anomaly detection results
+        """
+        try:
+            data = await self._load_data()
+            
+            if 'anomalies' not in data:
+                data['anomalies'] = []
+            
+            anomaly_record = {
+                'timestamp': datetime.utcnow().isoformat(),
+                'symbol': symbol,
+                'decision': decision,
+                'market_data': market_data,
+                'technical_indicators': technical_indicators,
+                'anomaly_flags': anomaly_data.get('flags', []),
+                'severity': anomaly_data.get('severity', 'none')
+            }
+            
+            data['anomalies'].append(anomaly_record)
+            
+            # Keep only last 1000 anomalies
+            if len(data['anomalies']) > 1000:
+                data['anomalies'] = data['anomalies'][-1000:]
+            
+            await self._save_data(data)
+            
+            # Log anomaly
+            flags_summary = ', '.join([f['type'] for f in anomaly_data.get('flags', [])])
+            logger.warning(
+                f"🚨 ANOMALY DETECTED for {symbol}: {flags_summary} "
+                f"(severity: {anomaly_data.get('severity', 'none')})"
+            )
+            
+        except Exception as e:
+            logger.error(f"Error recording anomaly: {e}")
+
+    async def get_anomaly_statistics(self) -> Dict[str, Any]:
+        """
+        Get statistics about detected anomalies.
+        
+        Returns:
+            Dictionary with anomaly statistics
+        """
+        try:
+            data = await self._load_data()
+            anomalies = data.get('anomalies', [])
+            
+            if not anomalies:
+                return {
+                    'total_anomalies': 0,
+                    'by_severity': {},
+                    'by_type': {},
+                    'anomaly_rate': 0.0
+                }
+            
+            # Count by severity
+            by_severity = {'low': 0, 'medium': 0, 'high': 0}
+            for anomaly in anomalies:
+                severity = anomaly.get('severity', 'none')
+                if severity in by_severity:
+                    by_severity[severity] += 1
+            
+            # Count by type
+            by_type = {}
+            for anomaly in anomalies:
+                for flag in anomaly.get('anomaly_flags', []):
+                    flag_type = flag.get('type', 'unknown')
+                    by_type[flag_type] = by_type.get(flag_type, 0) + 1
+            
+            # Calculate anomaly rate (vs total decisions)
+            total_decisions = len(data.get('ai_decisions', []))
+            anomaly_rate = (len(anomalies) / total_decisions * 100) if total_decisions > 0 else 0.0
+            
+            return {
+                'total_anomalies': len(anomalies),
+                'by_severity': by_severity,
+                'by_type': by_type,
+                'anomaly_rate': round(anomaly_rate, 2),
+                'recent_anomalies': anomalies[-10:] if len(anomalies) >= 10 else anomalies
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting anomaly statistics: {e}")
+            return {}
+
+    async def get_decision_statistics(self) -> Dict[str, Any]:
+        """
+        Get statistics about AI decisions.
+        
+        Returns:
+            Dictionary with decision statistics
+        """
+        try:
+            data = await self._load_data()
+            decisions = data.get('ai_decisions', [])
+            
+            if not decisions:
+                return {
+                    'total_decisions': 0,
+                    'by_action': {},
+                    'avg_confidence': 0.0,
+                    'parsing_errors': 0
+                }
+            
+            # Count by action
+            by_action = {'BUY': 0, 'SELL': 0, 'HOLD': 0}
+            confidences = []
+            
+            for decision in decisions:
+                action = decision.get('decision', {}).get('action', '').upper()
+                if action in by_action:
+                    by_action[action] += 1
+                
+                confidence = decision.get('decision', {}).get('confidence', 0)
+                if confidence > 0:
+                    confidences.append(confidence)
+            
+            # Count parsing errors (decisions with validation warnings)
+            parsing_errors = 0
+            for decision in decisions:
+                context = decision.get('context', {})
+                validation = context.get('validation', {})
+                if not validation.get('is_valid', True):
+                    parsing_errors += 1
+            
+            avg_confidence = sum(confidences) / len(confidences) if confidences else 0.0
+            
+            return {
+                'total_decisions': len(decisions),
+                'by_action': by_action,
+                'avg_confidence': round(avg_confidence, 2),
+                'parsing_errors': parsing_errors,
+                'parsing_error_rate': round((parsing_errors / len(decisions) * 100) if decisions else 0, 2)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting decision statistics: {e}")
+            return {}
+

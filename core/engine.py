@@ -193,6 +193,23 @@ class TradingEngine:
                     for warning in warnings:
                         logger.debug(f"  ⚠️  {warning}")
             
+            # Detect anomalies in AI decision (Task 6)
+            if self.analytics:
+                anomaly_data = self.analytics.detect_anomalies(
+                    decision=decision.to_dict(),
+                    market_data=market_data,
+                    technical_indicators=indicators
+                )
+                
+                if anomaly_data.get('has_anomalies'):
+                    await self.analytics.record_anomaly(
+                        symbol=symbol,
+                        decision=decision.to_dict(),
+                        market_data=market_data,
+                        technical_indicators=indicators,
+                        anomaly_data=anomaly_data
+                    )
+            
             # Record AI decision for analytics and get timestamp
             decision_timestamp = None
             if self.analytics:

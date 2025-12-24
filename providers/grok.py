@@ -419,7 +419,7 @@ CRITICAL: Never output anything except the JSON object. No markdown, no code blo
                 # Entry conditions
                 entry_indicators = entry.get('technical_indicators', {})
                 if entry_indicators:
-                    prompt_parts.append(
+                prompt_parts.append(
                         f"  Entry Conditions: RSI={entry_indicators.get('rsi', 0):.1f}, "
                         f"EMA20={entry_indicators.get('ema_20', 0):.2f}, "
                         f"EMA50={entry_indicators.get('ema_50', 0):.2f}"
@@ -457,7 +457,7 @@ CRITICAL: Never output anything except the JSON object. No markdown, no code blo
 
     async def _call_grok_api(self, user_message: str) -> tuple[str, dict]:
         """
-        Call Grok API with the analysis prompt.
+        Call Grok API with the analysis prompt (with retry logic).
         
         Args:
             user_message: The analysis prompt
@@ -465,6 +465,16 @@ CRITICAL: Never output anything except the JSON object. No markdown, no code blo
         Returns:
             Tuple of (API response text, usage info dict)
         """
+        import asyncio
+        
+        # Validate prompt before sending
+        if not user_message or len(user_message.strip()) == 0:
+            raise ValueError("Empty prompt cannot be sent to Grok API")
+        
+        max_retries = 3
+        base_delay = 1.0  # Start with 1 second
+        
+        for attempt in range(max_retries):
         try:
             payload = {
                 "model": self.model,
@@ -475,45 +485,93 @@ CRITICAL: Never output anything except the JSON object. No markdown, no code blo
                 "temperature": 0.3,  # Lower temperature for more consistent trading decisions
                 "max_tokens": 500
             }
+                
+                import time
+                start_time = time.time()
             
             response = await self.client.post(
                 f"{self.base_url}/chat/completions",
                 json=payload
             )
+                
+                latency_ms = (time.time() - start_time) * 1000
             
             response.raise_for_status()
             data = response.json()
             
             content = data['choices'][0]['message']['content']
-            
-            # Log API response details for debugging
-            usage = data.get('usage', {})
-            total_tokens = usage.get('total_tokens', 0)
-            prompt_tokens = usage.get('prompt_tokens', 0)
-            completion_tokens = usage.get('completion_tokens', 0)
-            
-            logger.debug(
-                f"Grok API response: "
-                f"tokens={total_tokens}, "
-                f"prompt_tokens={prompt_tokens}, "
-                f"completion_tokens={completion_tokens}"
-            )
-            logger.debug(f"Raw Grok response: {content[:200]}..." if len(content) > 200 else f"Raw Grok response: {content}")
-            
-            # Return response and usage info
-            usage_info = {
-                'total_tokens': total_tokens,
-                'prompt_tokens': prompt_tokens,
-                'completion_tokens': completion_tokens
-            }
-            return content.strip(), usage_info
-            
-        except httpx.HTTPError as e:
-            logger.error(f"HTTP error calling Grok API: {e}")
+                
+                # Log API response details for debugging
+                usage = data.get('usage', {})
+                total_tokens = usage.get('total_tokens', 0)
+                prompt_tokens = usage.get('prompt_tokens', 0)
+                completion_tokens = usage.get('completion_tokens', 0)
+                
+                logger.debug(
+                    f"Grok API response: "
+                    f"latency={latency_ms:.0f}ms, "
+                    f"tokens={total_tokens}, "
+                    f"prompt_tokens={prompt_tokens}, "
+                    f"completion_tokens={completion_tokens}"
+                )
+                logger.debug(f"Raw Grok response: {content[:200]}..." if len(content) > 200 else f"Raw Grok response: {content}")
+                
+                # Return response and usage info
+                usage_info = {
+                    'total_tokens': total_tokens,
+                    'prompt_tokens': prompt_tokens,
+                    'completion_tokens': completion_tokens,
+                    'latency_ms': latency_ms
+                }
+                return content.strip(), usage_info
+                
+            except httpx.HTTPStatusError as e:
+                # Retry on 5xx errors (server errors)
+                if e.response.status_code >= 500 and attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)  # Exponential backoff
+                    logger.warning(
+                        f"Grok API server error (status {e.response.status_code}), "
+                        f"retrying in {delay:.1f}s (attempt {attempt + 1}/{max_retries})"
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                else:
+                    logger.error(f"Grok API HTTP error: {e}")
+                    raise
+                    
+            except httpx.TimeoutException as e:
+                # Retry on timeout
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)
+                    logger.warning(
+                        f"Grok API timeout, retrying in {delay:.1f}s (attempt {attempt + 1}/{max_retries})"
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                else:
+                    logger.error(f"Grok API timeout after {max_retries} attempts: {e}")
+                    raise
+                    
+            except httpx.RequestError as e:
+                # Retry on network errors
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)
+                    logger.warning(
+                        f"Grok API network error, retrying in {delay:.1f}s (attempt {attempt + 1}/{max_retries})"
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                else:
+                    logger.error(f"Grok API network error after {max_retries} attempts: {e}")
             raise
+                    
         except Exception as e:
-            logger.error(f"Unexpected error calling Grok API: {e}")
+                # Don't retry on other errors (validation, parsing, etc.)
+                logger.error(f"Error calling Grok API: {e}")
             raise
+        
+        # Should not reach here, but just in case
+        raise Exception(f"Failed to call Grok API after {max_retries} attempts")
 
     def _parse_response(self, response: str) -> AIDecision:
         """
@@ -537,7 +595,7 @@ CRITICAL: Never output anything except the JSON object. No markdown, no code blo
             
             # Parse JSON
             try:
-                data = json.loads(response)
+            data = json.loads(response)
             except json.JSONDecodeError as e:
                 logger.error(f"Failed to parse Grok response as JSON: {e}")
                 logger.debug(f"Response was: {response[:500]}...")
