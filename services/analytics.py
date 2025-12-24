@@ -212,27 +212,54 @@ class Analytics:
             if not closed_trades:
                 return {}
             
-            # Calculate metrics
-            total_pnl = sum(t.get('pnl', 0) for t in closed_trades)
-            winning_trades = [t for t in closed_trades if t.get('pnl', 0) > 0]
-            losing_trades = [t for t in closed_trades if t.get('pnl', 0) <= 0]
+            # Calculate metrics - read from results dict (StateManager format)
+            def get_pnl_usdt(trade):
+                """Get PnL in USDT from trade results."""
+                results = trade.get('results', {})
+                if results:
+                    return results.get('pnl_usdt', 0) or 0
+                # Backward compatibility: try top level
+                return trade.get('pnl', 0) or 0
+            
+            def get_pnl_percent(trade):
+                """Get PnL percentage from trade results."""
+                results = trade.get('results', {})
+                if results:
+                    return results.get('pnl_percent', 0) or 0
+                # Backward compatibility: try top level
+                return trade.get('pnl_pct', 0) or 0
+            
+            total_pnl = sum(get_pnl_usdt(t) for t in closed_trades)
+            winning_trades = [t for t in closed_trades if get_pnl_usdt(t) > 0]
+            losing_trades = [t for t in closed_trades if get_pnl_usdt(t) <= 0]
             
             win_rate = (len(winning_trades) / len(closed_trades)) * 100 if closed_trades else 0
             
             # Calculate average holding time
             holding_times = []
             for trade in closed_trades:
-                entry_time = trade.get('entry_time')
-                exit_time = trade.get('exit_time')
+                entry_data = trade.get('entry', {})
+                exit_data = trade.get('exit', {})
+                entry_time = entry_data.get('time') if entry_data else None
+                exit_time = exit_data.get('time') if exit_data else None
+                # Backward compatibility: try top level
+                if not entry_time:
+                    entry_time = trade.get('entry_time')
+                if not exit_time:
+                    exit_time = trade.get('exit_time')
+                
                 if entry_time and exit_time:
-                    entry = datetime.fromisoformat(entry_time.replace('Z', '+00:00'))
-                    exit = datetime.fromisoformat(exit_time.replace('Z', '+00:00'))
-                    holding_times.append((exit - entry).total_seconds() / 3600)  # hours
+                    try:
+                        entry = datetime.fromisoformat(entry_time.replace('Z', '+00:00'))
+                        exit = datetime.fromisoformat(exit_time.replace('Z', '+00:00'))
+                        holding_times.append((exit - entry).total_seconds() / 3600)  # hours
+                    except (ValueError, AttributeError) as e:
+                        logger.debug(f"Error parsing trade times: {e}")
             
             avg_holding_time = sum(holding_times) / len(holding_times) if holding_times else 0
             
             # Calculate Sharpe ratio (simplified)
-            returns = [t.get('pnl_pct', 0) for t in closed_trades]
+            returns = [get_pnl_percent(t) for t in closed_trades]
             if len(returns) > 1:
                 try:
                     import numpy as np
@@ -252,7 +279,7 @@ class Analytics:
             cumulative_pnl = []
             running_total = 0
             for trade in closed_trades:
-                running_total += trade.get('pnl', 0)
+                running_total += get_pnl_usdt(trade)
                 cumulative_pnl.append(running_total)
             
             if cumulative_pnl:
@@ -274,8 +301,8 @@ class Analytics:
                 'win_rate': win_rate,
                 'total_pnl': total_pnl,
                 'avg_pnl_per_trade': total_pnl / len(closed_trades) if closed_trades else 0,
-                'avg_winning_trade': sum(t.get('pnl', 0) for t in winning_trades) / len(winning_trades) if winning_trades else 0,
-                'avg_losing_trade': sum(t.get('pnl', 0) for t in losing_trades) / len(losing_trades) if losing_trades else 0,
+                'avg_winning_trade': sum(get_pnl_usdt(t) for t in winning_trades) / len(winning_trades) if winning_trades else 0,
+                'avg_losing_trade': sum(get_pnl_usdt(t) for t in losing_trades) / len(losing_trades) if losing_trades else 0,
                 'avg_holding_time_hours': avg_holding_time,
                 'sharpe_ratio': sharpe,
                 'max_drawdown_pct': max_dd
