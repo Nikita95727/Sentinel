@@ -133,8 +133,9 @@ class Analytics:
 
     async def update_decision_result(
         self,
-        decision_timestamp: str,
-        executed: bool,
+        decision_id: Optional[str] = None,
+        decision_timestamp: Optional[str] = None,  # Backward compatibility
+        executed: bool = False,
         trade_result: Optional[Dict[str, Any]] = None
     ) -> None:
         """

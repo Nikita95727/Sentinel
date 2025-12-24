@@ -3,6 +3,7 @@
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Any
 from datetime import datetime
+from uuid import uuid4
 
 
 class AIDecision:
@@ -14,18 +15,21 @@ class AIDecision:
         confidence: float,
         reasoning: str,
         risk_level: str = "medium",
-        additional_context: Optional[Dict[str, Any]] = None
+        additional_context: Optional[Dict[str, Any]] = None,
+        decision_id: Optional[str] = None
     ):
         """
         Initialize AI decision.
         
         Args:
-            action: Trading action ('BUY', 'SELL', 'HOLD')
+            action: Trading action ('BUY', 'SELL', 'HOLD', 'ABSTAIN')
             confidence: Confidence score (0-100)
             reasoning: Explanation for the decision
             risk_level: Risk assessment ('low', 'medium', 'high')
             additional_context: Any additional context data
+            decision_id: Unique decision ID (UUID). If None, generates new UUID.
         """
+        self.decision_id = decision_id if decision_id else str(uuid4())
         self.action = action.upper()
         self.confidence = confidence
         self.reasoning = reasoning
@@ -48,6 +52,7 @@ class AIDecision:
     def to_dict(self) -> Dict[str, Any]:
         """Convert decision to dictionary."""
         return {
+            "decision_id": self.decision_id,
             "action": self.action,
             "confidence": self.confidence,
             "reasoning": self.reasoning,

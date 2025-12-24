@@ -267,16 +267,15 @@ class TradingEngine:
                         anomaly_data=anomaly_data
                     )
             
-            # Record AI decision for analytics and get timestamp
-            decision_timestamp = None
+            # Record AI decision for analytics and get decision_id
+            decision_id = decision.decision_id
             if self.analytics:
-                decision_timestamp = datetime.utcnow().isoformat()
                 await self.analytics.record_ai_decision(
                     symbol=symbol,
                     decision=decision.to_dict(),
                     market_data=market_data,
                     technical_indicators=indicators,
-                    context={'memory': memory}
+                    context={'memory': memory, 'decision_id': decision_id}
                 )
                 
                 # Record market condition
@@ -285,7 +284,7 @@ class TradingEngine:
                     indicators=indicators,
                     price=current_price,
                     volume=market_data.get('volume', 0)
-                )
+            )
             
             # Step 6: Execute trading logic based on decision
             current_position = self.positions.get(symbol)
@@ -497,10 +496,10 @@ class TradingEngine:
                     # Submit order to exchange
                     exchange_order = await self.exchange.create_market_order(
                         symbol=symbol,
-                        side='buy',
-                        amount=trade_params['position_size']
-                    )
-                    
+                    side='buy',
+                    amount=trade_params['position_size']
+                )
+                
                     # Update order with exchange response
                     order.exchange_id = exchange_order.get('id')
                     order.id = exchange_order.get('id')
@@ -578,7 +577,7 @@ class TradingEngine:
                 await self.analytics.update_decision_result(
                     decision_timestamp=decision_timestamp,
                     executed=True
-                )
+            )
             
             logger.success(f"Position opened: {symbol} @ ${current_price:.2f}")
             
@@ -689,10 +688,10 @@ class TradingEngine:
                     # Submit order to exchange
                     exchange_order = await self.exchange.create_market_order(
                         symbol=symbol,
-                        side='sell',
-                        amount=position_size
-                    )
-                    
+                    side='sell',
+                    amount=position_size
+                )
+                
                     # Update order with exchange response
                     sell_order.exchange_id = exchange_order.get('id')
                     sell_order.id = exchange_order.get('id')
@@ -747,10 +746,10 @@ class TradingEngine:
                     'change_pct': ticker.get('percentage', 0)
                 }
                 
-                await self.state_manager.update_trade_exit(
+                    await self.state_manager.update_trade_exit(
                     trade_id=open_trade['trade_id'],
-                    exit_price=current_price,
-                    exit_reason=exit_reason,
+                        exit_price=current_price,
+                        exit_reason=exit_reason,
                     pnl=pnl_usdt,
                     exit_indicators=exit_indicators,
                     exit_market_data=exit_market_data
@@ -895,7 +894,7 @@ class TradingEngine:
             logger.warning(f"Order {order.id} rejected: {order.error}")
         elif order.state == OrderState.CANCELLED:
             logger.info(f"Order {order.id} cancelled")
-    
+
     async def initialize(self) -> None:
         """Initialize all components."""
         logger.info("Initializing trading engine...")

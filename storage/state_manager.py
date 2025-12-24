@@ -198,6 +198,9 @@ class StateManager:
                 "status": status,
                 "outcome": outcome,
                 
+                # Decision ID for linking AI decision to trade
+                "decision_id": decision_id,
+                
                 # Entry information
                 "entry": {
                     "price": entry_price,
