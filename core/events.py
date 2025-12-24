@@ -43,13 +43,15 @@ class Event(ABC):
 @dataclass
 class MarketDataEvent(Event):
     """Event for market data updates."""
-    symbol: str
-    price: float
-    volume: float
-    indicators: Dict[str, float]
+    symbol: str = ""
+    price: float = 0.0
+    volume: float = 0.0
+    indicators: Dict[str, float] = field(default_factory=dict)
     
     def __post_init__(self):
         self.event_type = EventType.MARKET_DATA
+        if not hasattr(self, 'metadata') or self.metadata is None:
+            self.metadata = {}
         self.metadata.update({
             'symbol': self.symbol,
             'price': self.price,
@@ -61,14 +63,16 @@ class MarketDataEvent(Event):
 @dataclass
 class SignalEvent(Event):
     """Event for trading signals."""
-    symbol: str
-    action: str  # BUY, SELL, HOLD
-    confidence: float
-    reasoning: str
-    indicators: Dict[str, float]
+    symbol: str = ""
+    action: str = "HOLD"  # BUY, SELL, HOLD
+    confidence: float = 0.0
+    reasoning: str = ""
+    indicators: Dict[str, float] = field(default_factory=dict)
     
     def __post_init__(self):
         self.event_type = EventType.SIGNAL
+        if not hasattr(self, 'metadata') or self.metadata is None:
+            self.metadata = {}
         self.metadata.update({
             'symbol': self.symbol,
             'action': self.action,
@@ -81,15 +85,17 @@ class SignalEvent(Event):
 @dataclass
 class OrderEvent(Event):
     """Event for order lifecycle."""
-    order_id: str
-    symbol: str
-    side: str  # buy, sell
-    state: str  # pending, submitted, filled, etc.
-    amount: float
+    order_id: str = ""
+    symbol: str = ""
+    side: str = "buy"  # buy, sell
+    state: str = "pending"  # pending, submitted, filled, etc.
+    amount: float = 0.0
     filled_amount: float = 0.0
     
     def __post_init__(self):
         self.event_type = EventType.ORDER
+        if not hasattr(self, 'metadata') or self.metadata is None:
+            self.metadata = {}
         self.metadata.update({
             'order_id': self.order_id,
             'symbol': self.symbol,
@@ -103,14 +109,16 @@ class OrderEvent(Event):
 @dataclass
 class PositionEvent(Event):
     """Event for position changes."""
-    symbol: str
-    action: str  # opened, closed
+    symbol: str = ""
+    action: str = "opened"  # opened, closed
     entry_price: Optional[float] = None
     exit_price: Optional[float] = None
     pnl: Optional[float] = None
     
     def __post_init__(self):
         self.event_type = EventType.POSITION
+        if not hasattr(self, 'metadata') or self.metadata is None:
+            self.metadata = {}
         self.metadata.update({
             'symbol': self.symbol,
             'action': self.action,
