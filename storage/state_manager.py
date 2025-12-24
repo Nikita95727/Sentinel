@@ -56,13 +56,15 @@ class StateManager:
     def _ensure_daily_rotation(self) -> None:
         """
         Ensure daily file rotation is handled.
-        If it's a new day, the current file is already correctly named.
+        Checks if we need to rotate to a new day's file.
         """
         today = date.today()
         
-        # If we have a current file from a previous day, it's already been rotated
-        # (in a real scenario, rotation would happen at midnight via scheduler)
-        # For now, we just ensure the current file exists for today
+        # If current file is from a different day, we need to rotate
+        if self._current_file_path and self._current_date and self._current_date != today:
+            # Old file is already correctly named (trades_YYYY-MM-DD.jsonl)
+            # Just need to create new file for today
+            logger.info(f"Daily rotation: New day detected ({today.isoformat()})")
         
         filename = f"trades_{today.isoformat()}.jsonl"
         self._current_file_path = self.storage_dir / filename
@@ -72,6 +74,26 @@ class StateManager:
         if not self._current_file_path.exists():
             self._current_file_path.touch()
             logger.debug(f"Created new daily trade file: {self._current_file_path}")
+    
+    async def perform_daily_rotation(self) -> None:
+        """
+        Perform daily file rotation (called by scheduler at midnight).
+        Ensures we're using the correct file for the new day.
+        """
+        try:
+            old_date = self._current_date
+            self._ensure_daily_rotation()
+            
+            if old_date and old_date != self._current_date:
+                logger.info(
+                    f"Daily rotation completed: "
+                    f"{old_date.isoformat()} → {self._current_date.isoformat()}"
+                )
+            else:
+                logger.debug("Daily rotation check: No rotation needed")
+                
+        except Exception as e:
+            logger.error(f"Error during daily rotation: {e}", exc_info=True)
     
     def _get_all_trade_files(self, days_back: Optional[int] = None) -> List[Path]:
         """
@@ -261,6 +283,13 @@ class StateManager:
             async with aiofiles.open(current_file, 'a') as f:
                 await f.write(json.dumps(trade_record, ensure_ascii=False) + '\n')
             
+            # Validate data quality (Task 2)
+            validation_result = self._validate_trade_record(trade_record)
+            if not validation_result['is_valid']:
+                logger.warning(
+                    f"Trade data quality issues for {symbol}: {validation_result['warnings']}"
+                )
+            
             # Invalidate stats cache
             self._stats_cache = None
             
@@ -268,7 +297,74 @@ class StateManager:
             
         except Exception as e:
             logger.error(f"Error adding trade: {e}", exc_info=True)
-
+    
+    def _validate_trade_record(self, trade_record: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Validate quality of trade record data.
+        
+        Args:
+            trade_record: Trade record to validate
+            
+        Returns:
+            Dictionary with validation result
+        """
+        validation = {
+            'is_valid': True,
+            'warnings': []
+        }
+        
+        # Required fields
+        required_fields = [
+            'trade_id', 'symbol', 'side', 'status', 'entry'
+        ]
+        
+        for field in required_fields:
+            if field not in trade_record:
+                validation['is_valid'] = False
+                validation['warnings'].append(f"Missing required field: {field}")
+        
+        # Validate entry data
+        entry = trade_record.get('entry', {})
+        if entry:
+            required_entry_fields = ['price', 'time', 'position_size']
+            for field in required_entry_fields:
+                if field not in entry:
+                    validation['warnings'].append(f"Missing entry field: {field}")
+            
+            # Validate price
+            if 'price' in entry:
+                price = entry['price']
+                if not isinstance(price, (int, float)) or price <= 0:
+                    validation['warnings'].append(f"Invalid entry price: {price}")
+            
+            # Validate position size
+            if 'position_size' in entry:
+                size = entry['position_size']
+                if not isinstance(size, (int, float)) or size <= 0:
+                    validation['warnings'].append(f"Invalid position size: {size}")
+        
+        # Validate exit data if closed
+        if trade_record.get('status') == 'closed':
+            exit_data = trade_record.get('exit')
+            if not exit_data:
+                validation['warnings'].append("Missing exit data for closed trade")
+            else:
+                if 'price' not in exit_data:
+                    validation['warnings'].append("Missing exit price")
+                if 'time' not in exit_data:
+                    validation['warnings'].append("Missing exit time")
+        
+        # Validate AI metadata (should be present for learning)
+        if not trade_record.get('ai_metadata'):
+            validation['warnings'].append("Missing AI metadata (important for learning)")
+        
+        # Validate technical indicators (should be present)
+        entry_indicators = entry.get('technical_indicators', {})
+        if not entry_indicators:
+            validation['warnings'].append("Missing entry technical indicators")
+        
+        return validation
+    
     def _generate_lessons(
         self,
         outcome: Optional[str],
@@ -705,3 +801,67 @@ class StateManager:
         except Exception as e:
             logger.error(f"Error calculating statistics: {e}")
             return {}
+    
+    async def cleanup_old_files(self, retention_days: int = 30) -> Dict[str, Any]:
+        """
+        Clean up old trade files based on retention policy.
+        
+        Args:
+            retention_days: Number of days to keep files (default: 30)
+            
+        Returns:
+            Dictionary with cleanup statistics
+        """
+        try:
+            today = date.today()
+            deleted_count = 0
+            deleted_size = 0
+            errors = []
+            
+            # Get all trade files
+            for file_path in self.storage_dir.glob("trades_*.jsonl"):
+                try:
+                    # Extract date from filename
+                    date_str = file_path.stem.replace("trades_", "")
+                    file_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+                    
+                    # Calculate days old
+                    days_old = (today - file_date).days
+                    
+                    # Delete if older than retention period
+                    if days_old > retention_days:
+                        file_size = file_path.stat().st_size
+                        file_path.unlink()
+                        deleted_count += 1
+                        deleted_size += file_size
+                        logger.info(
+                            f"Deleted old trade file: {file_path.name} "
+                            f"({days_old} days old, {file_size} bytes)"
+                        )
+                except (ValueError, AttributeError, OSError) as e:
+                    errors.append(f"{file_path.name}: {str(e)}")
+                    continue
+            
+            result = {
+                'deleted_files': deleted_count,
+                'deleted_size_bytes': deleted_size,
+                'errors': errors
+            }
+            
+            if deleted_count > 0:
+                logger.info(
+                    f"Cleanup completed: Deleted {deleted_count} files "
+                    f"({deleted_size / 1024 / 1024:.2f} MB)"
+                )
+            else:
+                logger.debug("Cleanup: No old files to delete")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error cleaning up old files: {e}", exc_info=True)
+            return {
+                'deleted_files': 0,
+                'deleted_size_bytes': 0,
+                'errors': [str(e)]
+            }

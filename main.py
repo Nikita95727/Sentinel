@@ -233,11 +233,47 @@ async def main():
             logger.error(f"Error generating daily report: {e}")
     
     from apscheduler.triggers.cron import CronTrigger
+    
+    # Add daily report generation job (runs once per day at midnight UTC)
     scheduler.add_job(
         generate_daily_report_job,
         trigger=CronTrigger(hour=0, minute=0),  # Midnight UTC
         id='daily_report',
         name='Daily Report Generation',
+        replace_existing=True
+    )
+    
+    # Add daily file rotation job (runs once per day at midnight UTC)
+    async def daily_rotation_job():
+        """Perform daily file rotation for trade storage."""
+        try:
+            await state_manager.perform_daily_rotation()
+            logger.info("Daily file rotation completed")
+        except Exception as e:
+            logger.error(f"Error in daily rotation job: {e}")
+    
+    scheduler.add_job(
+        daily_rotation_job,
+        trigger=CronTrigger(hour=0, minute=0),  # Midnight UTC
+        id='daily_rotation',
+        name='Daily File Rotation',
+        replace_existing=True
+    )
+    
+    # Add old files cleanup job (runs once per day at 1 AM UTC)
+    async def cleanup_old_files_job():
+        """Clean up old trade files based on retention policy."""
+        try:
+            await state_manager.cleanup_old_files(retention_days=settings.storage_retention_days)
+            logger.info(f"Old files cleanup completed (retention: {settings.storage_retention_days} days)")
+        except Exception as e:
+            logger.error(f"Error in cleanup job: {e}")
+    
+    scheduler.add_job(
+        cleanup_old_files_job,
+        trigger=CronTrigger(hour=1, minute=0),  # 1 AM UTC (after rotation)
+        id='cleanup_old_files',
+        name='Old Files Cleanup',
         replace_existing=True
     )
     
