@@ -245,7 +245,7 @@ async def main():
         min_risk_reward=settings.min_risk_reward
     )
     state_manager = StateManager(storage_path=settings.storage_path)
-    analytics = Analytics(storage_path="storage/analytics.json")
+    analytics = Analytics(storage_path="storage/analytics")
     report_generator = ReportGenerator(analytics=analytics, state_manager=state_manager)
     
     # Trading engine (initially with fallback symbol)
