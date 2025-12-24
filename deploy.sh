@@ -207,7 +207,7 @@ BYBIT_TESTNET=false
 
 # AI Configuration
 GROK_API_KEY=your_grok_api_key_here
-GROK_MODEL=grok-beta
+GROK_MODEL=grok-4-1-fast-reasoning
 
 # Trading Configuration
 TRADING_SYMBOL=BTC/USDT

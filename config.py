@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     
     # AI Configuration
     grok_api_key: str
-    grok_model: str = "grok-beta"
+    grok_model: str = "grok-4-1-fast-reasoning"
     
     # Trading Configuration
     trading_symbol: str = "BTC/USDT"  # Fallback если screening не сработал

@@ -12,13 +12,13 @@ from core.base_ai import BaseAI, AIDecision
 class GrokProvider(BaseAI):
     """Grok AI implementation using x.ai API."""
 
-    def __init__(self, api_key: str, model: str = "grok-beta"):
+    def __init__(self, api_key: str, model: str = "grok-4-1-fast-reasoning"):
         """
         Initialize Grok provider.
         
         Args:
             api_key: x.ai API key
-            model: Model name (default: 'grok-beta')
+            model: Model name (default: 'grok-4-1-fast-reasoning')
         """
         self.api_key = api_key
         self.model = model
