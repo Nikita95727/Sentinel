@@ -49,7 +49,8 @@ class Settings(BaseSettings):
     log_retention: str = "30 days"
     
     # Storage
-    storage_path: str = "storage/trades.jsonl"  # JSONL format for Grok-friendly learning
+    storage_path: str = "storage/trades"  # Directory for daily JSONL files (trades_YYYY-MM-DD.jsonl)
+    storage_retention_days: int = 30  # Keep trade files for last N days
     
     
 # Global settings instance

@@ -1,28 +1,112 @@
-"""State manager for persisting trading history in JSONL format optimized for Grok learning."""
+"""State manager for persisting trading history in daily JSONL files optimized for Grok learning."""
 
 import json
 import aiofiles
 from pathlib import Path
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, date
 from loguru import logger
 
 
 class StateManager:
-    """Manages trading history in JSONL format for optimal Grok learning."""
+    """Manages trading history in daily JSONL files for optimal Grok learning."""
 
-    def __init__(self, storage_path: str = "storage/trades.jsonl"):
+    def __init__(self, storage_path: str = "storage/trades"):
         """
-        Initialize state manager.
+        Initialize state manager with daily file rotation.
         
         Args:
-            storage_path: Path to history JSONL file
+            storage_path: Path to storage directory (will create daily files inside)
         """
-        self.storage_path = Path(storage_path)
-        self.storage_path.parent.mkdir(parents=True, exist_ok=True)
+        self.storage_dir = Path(storage_path)
+        self.storage_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Current date for file naming
+        self._current_date: Optional[date] = None
+        self._current_file_path: Optional[Path] = None
         
         # Statistics cache (calculated on demand)
         self._stats_cache: Optional[Dict[str, Any]] = None
+        
+        # Ensure daily rotation on init
+        self._ensure_daily_rotation()
+    
+    def _get_current_file_path(self) -> Path:
+        """
+        Get path to current day's trade file.
+        Automatically handles daily rotation.
+        
+        Returns:
+            Path to current day's JSONL file
+        """
+        today = date.today()
+        
+        # Check if we need to rotate (new day)
+        if self._current_date != today:
+            self._ensure_daily_rotation()
+            self._current_date = today
+        
+        # Return current file path
+        if self._current_file_path is None:
+            filename = f"trades_{today.isoformat()}.jsonl"
+            self._current_file_path = self.storage_dir / filename
+        
+        return self._current_file_path
+    
+    def _ensure_daily_rotation(self) -> None:
+        """
+        Ensure daily file rotation is handled.
+        If it's a new day, the current file is already correctly named.
+        """
+        today = date.today()
+        
+        # If we have a current file from a previous day, it's already been rotated
+        # (in a real scenario, rotation would happen at midnight via scheduler)
+        # For now, we just ensure the current file exists for today
+        
+        filename = f"trades_{today.isoformat()}.jsonl"
+        self._current_file_path = self.storage_dir / filename
+        self._current_date = today
+        
+        # Ensure file exists (create empty if needed)
+        if not self._current_file_path.exists():
+            self._current_file_path.touch()
+            logger.debug(f"Created new daily trade file: {self._current_file_path}")
+    
+    def _get_all_trade_files(self, days_back: Optional[int] = None) -> List[Path]:
+        """
+        Get all trade files, optionally limited to last N days.
+        
+        Args:
+            days_back: Number of days to look back (None = all files)
+            
+        Returns:
+            List of trade file paths, sorted by date (newest first)
+        """
+        files = []
+        
+        # Get all trade files
+        for file_path in self.storage_dir.glob("trades_*.jsonl"):
+            try:
+                # Extract date from filename (trades_YYYY-MM-DD.jsonl)
+                date_str = file_path.stem.replace("trades_", "")
+                file_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+                
+                # Filter by days_back if specified
+                if days_back is None:
+                    files.append((file_date, file_path))
+                else:
+                    days_ago = (date.today() - file_date).days
+                    if 0 <= days_ago <= days_back:
+                        files.append((file_date, file_path))
+            except (ValueError, AttributeError):
+                # Skip files with invalid names
+                continue
+        
+        # Sort by date (newest first)
+        files.sort(key=lambda x: x[0], reverse=True)
+        
+        return [file_path for _, file_path in files]
 
     async def add_trade(
         self,
@@ -172,8 +256,9 @@ class StateManager:
                 "timestamp": datetime.utcnow().isoformat()
             }
             
-            # Append to JSONL file
-            async with aiofiles.open(self.storage_path, 'a') as f:
+            # Append to current day's JSONL file
+            current_file = self._get_current_file_path()
+            async with aiofiles.open(current_file, 'a') as f:
                 await f.write(json.dumps(trade_record, ensure_ascii=False) + '\n')
             
             # Invalidate stats cache
@@ -251,26 +336,30 @@ class StateManager:
         return lessons
 
     async def _get_next_trade_id(self) -> int:
-        """Get next trade ID by counting existing trades."""
+        """Get next trade ID by counting existing trades across all files."""
         try:
             count = 0
-            async with aiofiles.open(self.storage_path, 'r') as f:
-                async for line in f:
-                    if line.strip():
-                        count += 1
+            # Count trades in all files
+            for file_path in self._get_all_trade_files():
+                try:
+                    async with aiofiles.open(file_path, 'r') as f:
+                        async for line in f:
+                            if line.strip():
+                                count += 1
+                except (FileNotFoundError, IOError):
+                    continue
             return count + 1
-        except FileNotFoundError:
-            return 1
         except Exception:
             return 1
 
-    async def get_recent_trades(self, limit: int = 3) -> List[Dict[str, Any]]:
+    async def get_recent_trades(self, limit: int = 3, days_back: int = 7) -> List[Dict[str, Any]]:
         """
-        Get recent closed trades for AI memory.
+        Get recent closed trades for AI memory from multiple daily files.
         Optimized format for Grok to read and learn from.
         
         Args:
             limit: Number of recent trades to retrieve
+            days_back: Number of days to look back for trades (default: 7)
             
         Returns:
             List of recent trades in Grok-friendly format
@@ -278,30 +367,40 @@ class StateManager:
         try:
             trades = []
             
-            # Read file backwards (last lines first)
-            if not self.storage_path.exists():
+            # Get trade files from last N days (newest first)
+            trade_files = self._get_all_trade_files(days_back=days_back)
+            
+            if not trade_files:
                 return []
             
-            # Read all lines and filter closed trades
-            async with aiofiles.open(self.storage_path, 'r') as f:
-                async for line in f:
-                    if line.strip():
-                        try:
-                            trade = json.loads(line.strip())
-                            if trade.get('status') == 'closed':
-                                trades.append(trade)
-                        except json.JSONDecodeError:
-                            continue
+            # Read from all files (newest first)
+            for file_path in trade_files:
+                try:
+                    async with aiofiles.open(file_path, 'r') as f:
+                        async for line in f:
+                            if line.strip():
+                                try:
+                                    trade = json.loads(line.strip())
+                                    if trade.get('status') == 'closed':
+                                        trades.append(trade)
+                                except json.JSONDecodeError:
+                                    continue
+                except (FileNotFoundError, IOError) as e:
+                    logger.debug(f"Could not read {file_path}: {e}")
+                    continue
             
             # Sort by exit time (most recent first)
             trades.sort(
-                key=lambda x: x.get('exit', {}).get('time', '') or '',
+                key=lambda x: x.get('exit', {}).get('time', '') or x.get('timestamp', ''),
                 reverse=True
             )
             
             recent = trades[:limit]
             
-            logger.debug(f"Retrieved {len(recent)} recent trades for Grok memory")
+            logger.debug(
+                f"Retrieved {len(recent)} recent trades from {len(trade_files)} files "
+                f"(searched last {days_back} days)"
+            )
             return recent
             
         except Exception as e:
@@ -384,7 +483,7 @@ class StateManager:
     ) -> None:
         """
         Update a trade with exit information.
-        Since JSONL is append-only, we need to rewrite the file.
+        Since JSONL is append-only, we need to rewrite the file containing the trade.
         
         Args:
             trade_id: ID of the trade to update
@@ -395,16 +494,48 @@ class StateManager:
             exit_market_data: Market data at exit
         """
         try:
-            # Read all trades
+            # Find which file contains this trade
+            target_file = None
             trades = []
-            async with aiofiles.open(self.storage_path, 'r') as f:
-                async for line in f:
-                    if line.strip():
-                        try:
-                            trade = json.loads(line.strip())
-                            trades.append(trade)
-                        except json.JSONDecodeError:
-                            continue
+            
+            # Search in all files (newest first for efficiency)
+            for file_path in self._get_all_trade_files():
+                try:
+                    file_trades = []
+                    async with aiofiles.open(file_path, 'r') as f:
+                        async for line in f:
+                            if line.strip():
+                                try:
+                                    trade = json.loads(line.strip())
+                                    file_trades.append(trade)
+                                    # Check if this is our trade
+                                    if trade.get('trade_id') == trade_id:
+                                        target_file = file_path
+                                        trades = file_trades
+                                        break
+                                except json.JSONDecodeError:
+                                    continue
+                    
+                    if target_file:
+                        break
+                except (FileNotFoundError, IOError):
+                    continue
+            
+            if not target_file:
+                logger.warning(f"Trade {trade_id} not found in any file")
+                return
+            
+            if not trades:
+                # Re-read the file if we didn't collect all trades
+                trades = []
+                async with aiofiles.open(target_file, 'r') as f:
+                    async for line in f:
+                        if line.strip():
+                            try:
+                                trade = json.loads(line.strip())
+                                trades.append(trade)
+                            except json.JSONDecodeError:
+                                continue
             
             # Find and update the trade
             updated = False
@@ -449,8 +580,8 @@ class StateManager:
                 logger.warning(f"Trade {trade_id} not found for update")
                 return
             
-            # Rewrite file
-            async with aiofiles.open(self.storage_path, 'w') as f:
+            # Rewrite the file containing the trade
+            async with aiofiles.open(target_file, 'w') as f:
                 for trade in trades:
                     await f.write(json.dumps(trade, ensure_ascii=False) + '\n')
             
@@ -462,23 +593,35 @@ class StateManager:
         except Exception as e:
             logger.error(f"Error updating trade exit: {e}", exc_info=True)
 
-    async def load_history(self) -> Dict[str, Any]:
+    async def load_history(self, days_back: Optional[int] = None) -> Dict[str, Any]:
         """
-        Load all trades for backward compatibility.
+        Load all trades from daily files for backward compatibility.
+        
+        Args:
+            days_back: Number of days to load (None = all files)
         
         Returns:
             Dictionary with trades and statistics
         """
         try:
             trades = []
-            async with aiofiles.open(self.storage_path, 'r') as f:
-                async for line in f:
-                    if line.strip():
-                        try:
-                            trade = json.loads(line.strip())
-                            trades.append(trade)
-                        except json.JSONDecodeError:
-                            continue
+            
+            # Read from all trade files
+            for file_path in self._get_all_trade_files(days_back=days_back):
+                try:
+                    async with aiofiles.open(file_path, 'r') as f:
+                        async for line in f:
+                            if line.strip():
+                                try:
+                                    trade = json.loads(line.strip())
+                                    trades.append(trade)
+                                except json.JSONDecodeError:
+                                    continue
+                except (FileNotFoundError, IOError):
+                    continue
+            
+            # Sort by timestamp (oldest first for consistency)
+            trades.sort(key=lambda x: x.get('timestamp', ''))
             
             stats = await self.get_statistics()
             
@@ -487,7 +630,8 @@ class StateManager:
                 'statistics': stats
             }
             
-        except FileNotFoundError:
+        except Exception as e:
+            logger.error(f"Error loading history: {e}")
             return {
                 'trades': [],
                 'statistics': {
@@ -498,16 +642,13 @@ class StateManager:
                     'win_rate': 0.0
                 }
             }
-        except Exception as e:
-            logger.error(f"Error loading history: {e}")
-            return {
-                'trades': [],
-                'statistics': {}
-            }
 
-    async def get_statistics(self) -> Dict[str, Any]:
+    async def get_statistics(self, days_back: Optional[int] = None) -> Dict[str, Any]:
         """
-        Calculate trading statistics from JSONL file.
+        Calculate trading statistics from all daily JSONL files.
+        
+        Args:
+            days_back: Number of days to include (None = all files)
         
         Returns:
             Dictionary with performance statistics
@@ -518,15 +659,21 @@ class StateManager:
         
         try:
             closed_trades = []
-            async with aiofiles.open(self.storage_path, 'r') as f:
-                async for line in f:
-                    if line.strip():
-                        try:
-                            trade = json.loads(line.strip())
-                            if trade.get('status') == 'closed':
-                                closed_trades.append(trade)
-                        except json.JSONDecodeError:
-                            continue
+            
+            # Read from all trade files
+            for file_path in self._get_all_trade_files(days_back=days_back):
+                try:
+                    async with aiofiles.open(file_path, 'r') as f:
+                        async for line in f:
+                            if line.strip():
+                                try:
+                                    trade = json.loads(line.strip())
+                                    if trade.get('status') == 'closed':
+                                        closed_trades.append(trade)
+                                except json.JSONDecodeError:
+                                    continue
+                except (FileNotFoundError, IOError):
+                    continue
             
             total_trades = len(closed_trades)
             winning_trades = sum(1 for t in closed_trades if t.get('outcome') == 'WIN')
