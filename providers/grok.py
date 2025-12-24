@@ -1085,7 +1085,7 @@ Output: {"selected_coins": ["ETHUSDT"], "reasoning": "Good liquidity, neutral RS
         
         selection['symbols'] = filtered_symbols
         return selection
-    
+
     def _parse_symbol_selection(self, response: str) -> Dict[str, Any]:
         """
         Parse Grok's symbol selection response with new structured format.
