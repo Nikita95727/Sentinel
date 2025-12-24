@@ -11,6 +11,9 @@ from services.risk_manager import RiskManager
 from services.analytics import Analytics
 from services.ai_optimizer import AIOptimizer
 from storage.state_manager import StateManager
+from utils.error_handler import (
+    log_error_with_context, ErrorCode, ErrorCategory, ErrorSeverity
+)
 
 
 class TradingEngine:
@@ -99,7 +102,12 @@ class TradingEngine:
                 await self._run_symbol_cycle(symbol)
             
         except Exception as e:
-            logger.error(f"Error in trading cycle: {e}", exc_info=True)
+            log_error_with_context(
+                e, ErrorCode.BUSINESS_LOGIC_ERROR,
+                ErrorCategory.BUSINESS_LOGIC_ERROR, ErrorSeverity.CRITICAL,
+                "TradingEngine", operation="run_cycle",
+                metadata={"symbols_count": len(self.active_symbols)}
+            )
 
     async def _run_symbol_cycle(self, symbol: str) -> None:
         """
@@ -119,7 +127,13 @@ class TradingEngine:
             )
             
             if not ohlcv_data or len(ohlcv_data) < 50:
-                logger.warning(f"Insufficient market data for {symbol}, skipping")
+                log_error_with_context(
+                    ValueError(f"Insufficient market data: got {len(ohlcv_data) if ohlcv_data else 0} candles, need 50"),
+                    ErrorCode.DATA_INSUFFICIENT,
+                    ErrorCategory.DATA_ERROR, ErrorSeverity.MEDIUM,
+                    "TradingEngine", symbol=symbol, operation="fetch_ohlcv",
+                    metadata={"candles_received": len(ohlcv_data) if ohlcv_data else 0, "required": 50}
+                )
                 return
             
             # Step 2: Calculate technical indicators
@@ -300,7 +314,15 @@ class TradingEngine:
                     )
             
         except Exception as e:
-            logger.error(f"Error in cycle for {symbol}: {e}", exc_info=True)
+            log_error_with_context(
+                e, ErrorCode.BUSINESS_LOGIC_ERROR,
+                ErrorCategory.BUSINESS_LOGIC_ERROR, ErrorSeverity.HIGH,
+                "TradingEngine", symbol=symbol, operation="run_symbol_cycle",
+                metadata={
+                    "timeframe": self.timeframe,
+                    "has_position": self.positions.get(symbol) is not None
+                }
+            )
     
     def _technical_filter_passed(
         self, 
@@ -493,7 +515,16 @@ class TradingEngine:
             logger.success(f"Position opened: {symbol} @ ${current_price:.2f}")
             
         except Exception as e:
-            logger.error(f"Error executing buy: {e}", exc_info=True)
+            log_error_with_context(
+                e, ErrorCode.BUSINESS_LOGIC_ERROR,
+                ErrorCategory.BUSINESS_LOGIC_ERROR, ErrorSeverity.CRITICAL,
+                "TradingEngine", symbol=symbol, operation="execute_buy",
+                metadata={
+                    "entry_price": current_price,
+                    "dry_run": self.dry_run,
+                    "decision_confidence": decision.confidence if decision else None
+                }
+            )
 
     async def _check_exit_conditions(self, symbol: str, current_price: float) -> None:
         """
@@ -536,7 +567,12 @@ class TradingEngine:
                 )
                 
         except Exception as e:
-            logger.error(f"Error checking exit conditions: {e}", exc_info=True)
+            log_error_with_context(
+                e, ErrorCode.BUSINESS_LOGIC_ERROR,
+                ErrorCategory.BUSINESS_LOGIC_ERROR, ErrorSeverity.HIGH,
+                "TradingEngine", symbol=symbol, operation="check_exit_conditions",
+                metadata={"current_price": current_price}
+            )
 
     async def _execute_sell(self, symbol: str, current_price: float, exit_reason: str) -> None:
         """
@@ -636,7 +672,16 @@ class TradingEngine:
             logger.success(f"Position closed: {result} of ${pnl_usdt:+.2f}")
             
         except Exception as e:
-            logger.error(f"Error executing sell: {e}", exc_info=True)
+            log_error_with_context(
+                e, ErrorCode.BUSINESS_LOGIC_ERROR,
+                ErrorCategory.BUSINESS_LOGIC_ERROR, ErrorSeverity.CRITICAL,
+                "TradingEngine", symbol=symbol, operation="execute_sell",
+                metadata={
+                    "exit_price": current_price,
+                    "exit_reason": exit_reason,
+                    "dry_run": self.dry_run
+                }
+            )
 
     async def initialize(self) -> None:
         """Initialize all components."""

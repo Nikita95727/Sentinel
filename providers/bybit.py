@@ -7,6 +7,9 @@ from loguru import logger
 
 from core.base_exchange import BaseExchange
 from utils.resilience import retry_on_error, exchange_circuit
+from utils.error_handler import (
+    log_error_with_context, ErrorCode, ErrorCategory, ErrorSeverity
+)
 
 
 class BybitProvider(BaseExchange):
@@ -68,15 +71,49 @@ class BybitProvider(BaseExchange):
         """
         if not self.exchange:
             raise RuntimeError("Exchange not initialized")
-            
-        ohlcv = await self.exchange.fetch_ohlcv(
-            symbol=symbol,
-            timeframe=timeframe,
-            limit=limit
-        )
         
-        logger.debug(f"Fetched {len(ohlcv)} candles for {symbol} ({timeframe})")
-        return ohlcv
+        try:
+            ohlcv = await self.exchange.fetch_ohlcv(
+                symbol=symbol,
+                timeframe=timeframe,
+                limit=limit
+            )
+            
+            if not ohlcv or len(ohlcv) == 0:
+                log_error_with_context(
+                    ValueError(f"No OHLCV data returned for {symbol}"),
+                    ErrorCode.EXCHANGE_MARKET_DATA_ERROR,
+                    ErrorCategory.EXCHANGE_ERROR, ErrorSeverity.MEDIUM,
+                    "BybitProvider", symbol=symbol, operation="fetch_ohlcv",
+                    metadata={"timeframe": timeframe, "limit": limit}
+                )
+            
+            logger.debug(f"Fetched {len(ohlcv)} candles for {symbol} ({timeframe})")
+            return ohlcv
+        except ccxt.NetworkError as e:
+            log_error_with_context(
+                e, ErrorCode.EXCHANGE_CONNECTION_FAILED,
+                ErrorCategory.NETWORK_ERROR, ErrorSeverity.HIGH,
+                "BybitProvider", symbol=symbol, operation="fetch_ohlcv",
+                metadata={"timeframe": timeframe, "limit": limit}
+            )
+            raise
+        except ccxt.ExchangeError as e:
+            log_error_with_context(
+                e, ErrorCode.EXCHANGE_MARKET_DATA_ERROR,
+                ErrorCategory.EXCHANGE_ERROR, ErrorSeverity.MEDIUM,
+                "BybitProvider", symbol=symbol, operation="fetch_ohlcv",
+                metadata={"timeframe": timeframe, "limit": limit}
+            )
+            raise
+        except Exception as e:
+            log_error_with_context(
+                e, ErrorCode.EXCHANGE_MARKET_DATA_ERROR,
+                ErrorCategory.EXCHANGE_ERROR, ErrorSeverity.MEDIUM,
+                "BybitProvider", symbol=symbol, operation="fetch_ohlcv",
+                metadata={"timeframe": timeframe, "limit": limit, "error_type": type(e).__name__}
+            )
+            raise
 
     @exchange_circuit.call
     @retry_on_error(max_attempts=3, delay_seconds=5, exceptions=(ccxt.NetworkError, ccxt.ExchangeError))
@@ -92,12 +129,37 @@ class BybitProvider(BaseExchange):
         """
         if not self.exchange:
             raise RuntimeError("Exchange not initialized")
-            
-        balance = await self.exchange.fetch_balance()
-        free_balance = balance.get('free', {}).get(currency, 0.0)
         
-        logger.debug(f"Balance for {currency}: {free_balance}")
-        return float(free_balance or 0.0)
+        try:
+            balance = await self.exchange.fetch_balance()
+            free_balance = balance.get('free', {}).get(currency, 0.0)
+            
+            logger.debug(f"Balance for {currency}: {free_balance}")
+            return float(free_balance or 0.0)
+        except ccxt.NetworkError as e:
+            log_error_with_context(
+                e, ErrorCode.EXCHANGE_CONNECTION_FAILED,
+                ErrorCategory.NETWORK_ERROR, ErrorSeverity.HIGH,
+                "BybitProvider", operation="get_balance",
+                metadata={"currency": currency}
+            )
+            raise
+        except ccxt.ExchangeError as e:
+            log_error_with_context(
+                e, ErrorCode.EXCHANGE_CONNECTION_FAILED,
+                ErrorCategory.EXCHANGE_ERROR, ErrorSeverity.MEDIUM,
+                "BybitProvider", operation="get_balance",
+                metadata={"currency": currency}
+            )
+            raise
+        except Exception as e:
+            log_error_with_context(
+                e, ErrorCode.EXCHANGE_CONNECTION_FAILED,
+                ErrorCategory.EXCHANGE_ERROR, ErrorSeverity.MEDIUM,
+                "BybitProvider", operation="get_balance",
+                metadata={"currency": currency, "error_type": type(e).__name__}
+            )
+            raise
 
     @exchange_circuit.call
     @retry_on_error(max_attempts=2, delay_seconds=5, exceptions=(ccxt.NetworkError,))
@@ -123,15 +185,40 @@ class BybitProvider(BaseExchange):
         if not self.exchange:
             raise RuntimeError("Exchange not initialized")
             
-        order = await self.exchange.create_market_order(
-            symbol=symbol,
-            side=side,
-            amount=amount,
-            params=params or {}
-        )
+        try:
+            order = await self.exchange.create_market_order(
+                symbol=symbol,
+                side=side,
+                amount=amount,
+                params=params or {}
+            )
             
             logger.info(f"Market {side} order created: {symbol} amount={amount}, order_id={order.get('id')}")
             return order
+        except ccxt.InsufficientFunds as e:
+            log_error_with_context(
+                e, ErrorCode.EXCHANGE_INSUFFICIENT_BALANCE,
+                ErrorCategory.EXCHANGE_ERROR, ErrorSeverity.HIGH,
+                "BybitProvider", symbol=symbol, operation="create_market_order",
+                metadata={"side": side, "amount": amount}
+            )
+            raise
+        except ccxt.InvalidOrder as e:
+            log_error_with_context(
+                e, ErrorCode.EXCHANGE_ORDER_REJECTED,
+                ErrorCategory.EXCHANGE_ERROR, ErrorSeverity.HIGH,
+                "BybitProvider", symbol=symbol, operation="create_market_order",
+                metadata={"side": side, "amount": amount}
+            )
+            raise
+        except Exception as e:
+            log_error_with_context(
+                e, ErrorCode.EXCHANGE_ORDER_REJECTED,
+                ErrorCategory.EXCHANGE_ERROR, ErrorSeverity.HIGH,
+                "BybitProvider", symbol=symbol, operation="create_market_order",
+                metadata={"side": side, "amount": amount, "error_type": type(e).__name__}
+            )
+            raise
             
         except ccxt.InsufficientFunds as e:
             logger.error(f"Insufficient funds for order: {e}")

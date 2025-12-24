@@ -286,14 +286,43 @@ The bot is designed for easy expansion:
 - Adding new AI: create a class inheriting `BaseAI`
 - Multi-symbol trading: run multiple instances with different `.env` files
 
+## 📚 Documentation
+
+- **[Architecture Guide](docs/ARCHITECTURE.md)**: System architecture and component overview
+- **[Troubleshooting Guide](docs/TROUBLESHOOTING.md)**: Common issues and solutions
+- **[Error Codes Reference](docs/ERROR_CODES.md)**: Complete error code reference
+
 ## 🆘 Support
 
 If you encounter issues:
 1. Check logs: `tail -f logs/sentinel_*.log`
-2. Check configuration in `.env`
-3. Verify API keys are valid
-4. Check balance on Bybit
-5. Ensure all dependencies are installed
+2. Review [Troubleshooting Guide](docs/TROUBLESHOOTING.md)
+3. Check error codes in [Error Codes Reference](docs/ERROR_CODES.md)
+4. Check configuration in `.env`
+5. Verify API keys are valid
+6. Check balance on Bybit
+7. Ensure all dependencies are installed
+
+### Error Diagnostics
+
+The bot includes comprehensive error tracking with full context:
+
+```python
+from utils.error_handler import error_handler
+
+# Get error statistics
+stats = error_handler.get_error_statistics()
+print(f"Total errors: {stats['total_errors']}")
+print(f"By category: {stats['by_category']}")
+print(f"By severity: {stats['by_severity']}")
+```
+
+Every error includes:
+- Unique error ID
+- Error code and category
+- Full context (component, operation, symbol)
+- Stack trace
+- Causal chain (for chained errors)
 
 ## 📝 License
 

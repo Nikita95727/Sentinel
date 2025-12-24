@@ -17,6 +17,9 @@ from services.report_generator import ReportGenerator
 from services.validator import SafetyValidator
 from services.ai_optimizer import AIOptimizer
 from storage.state_manager import StateManager
+from utils.error_handler import (
+    log_error_with_context, ErrorCode, ErrorCategory, ErrorSeverity, error_handler
+)
 
 
 async def determine_market_phase(exchange: BybitProvider) -> str:
@@ -155,7 +158,12 @@ async def run_daily_screening(engine: TradingEngine, analyzer: Analyzer, ai_prov
         logger.info("="*80)
         
     except Exception as e:
-        logger.error(f"Error in daily screening: {e}", exc_info=True)
+        log_error_with_context(
+            e, ErrorCode.BUSINESS_LOGIC_ERROR,
+            ErrorCategory.BUSINESS_LOGIC_ERROR, ErrorSeverity.HIGH,
+            "DailyScreening", operation="run_daily_screening",
+            metadata={"max_symbols": settings.screener_max_symbols}
+        )
 
 
 async def main():

@@ -8,6 +8,9 @@ from loguru import logger
 
 from core.base_ai import BaseAI, AIDecision
 from utils.resilience import retry_on_error, ai_circuit
+from utils.error_handler import (
+    log_error_with_context, ErrorCode, ErrorCategory, ErrorSeverity
+)
 
 
 class GrokProvider(BaseAI):
@@ -290,13 +293,75 @@ CRITICAL: Never output anything except the JSON object. No markdown, no code blo
             
             return decision
             
-        except Exception as e:
-            logger.error(f"Error in Grok analysis: {e}")
-            # Try technical fallback before returning error
+        except httpx.HTTPStatusError as e:
+            error_code = ErrorCode.API_SERVER_ERROR if e.response.status_code >= 500 else ErrorCode.API_INVALID_RESPONSE
+            log_error_with_context(
+                e, error_code,
+                ErrorCategory.API_ERROR, ErrorSeverity.HIGH,
+                "GrokProvider", symbol=symbol, operation="analyze",
+                metadata={
+                    "status_code": e.response.status_code,
+                    "response": str(e.response.text)[:200] if hasattr(e.response, 'text') else None
+                }
+            )
+            # Try technical fallback
             try:
+                logger.warning(f"Using technical fallback for {symbol} due to API error")
                 return self._technical_fallback(technical_indicators, symbol)
             except Exception as fallback_error:
-                logger.error(f"Fallback also failed: {fallback_error}")
+                log_error_with_context(
+                    fallback_error, ErrorCode.AI_FALLBACK_USED,
+                    ErrorCategory.AI_ERROR, ErrorSeverity.CRITICAL,
+                    "GrokProvider", symbol=symbol, operation="technical_fallback"
+                )
+                return AIDecision(
+                    action="HOLD",
+                    confidence=0.0,
+                    reasoning=f"API error and fallback failed: {str(e)}",
+                    risk_level="high",
+                    additional_context={"error": str(e), "fallback_failed": True}
+                )
+        except httpx.TimeoutException as e:
+            log_error_with_context(
+                e, ErrorCode.AI_TIMEOUT,
+                ErrorCategory.AI_ERROR, ErrorSeverity.HIGH,
+                "GrokProvider", symbol=symbol, operation="analyze",
+                metadata={"timeout": 30.0}
+            )
+            # Try technical fallback
+            try:
+                logger.warning(f"Using technical fallback for {symbol} due to timeout")
+                return self._technical_fallback(technical_indicators, symbol)
+            except Exception as fallback_error:
+                log_error_with_context(
+                    fallback_error, ErrorCode.AI_FALLBACK_USED,
+                    ErrorCategory.AI_ERROR, ErrorSeverity.CRITICAL,
+                    "GrokProvider", symbol=symbol, operation="technical_fallback"
+                )
+                return AIDecision(
+                    action="HOLD",
+                    confidence=0.0,
+                    reasoning=f"API timeout and fallback failed: {str(e)}",
+                    risk_level="high",
+                    additional_context={"error": str(e), "fallback_failed": True}
+                )
+        except Exception as e:
+            log_error_with_context(
+                e, ErrorCode.AI_INVALID_DECISION,
+                ErrorCategory.AI_ERROR, ErrorSeverity.HIGH,
+                "GrokProvider", symbol=symbol, operation="analyze",
+                metadata={"error_type": type(e).__name__}
+            )
+            # Try technical fallback before returning error
+            try:
+                logger.warning(f"Using technical fallback for {symbol} due to unexpected error")
+                return self._technical_fallback(technical_indicators, symbol)
+            except Exception as fallback_error:
+                log_error_with_context(
+                    fallback_error, ErrorCode.AI_FALLBACK_USED,
+                    ErrorCategory.AI_ERROR, ErrorSeverity.CRITICAL,
+                    "GrokProvider", symbol=symbol, operation="technical_fallback"
+                )
                 # Return safe default decision on error
                 return AIDecision(
                     action="HOLD",
