@@ -302,16 +302,16 @@ class TradingEngine:
                     symbol, 
                     current_price, 
                     decision, 
-                    decision_timestamp,
+                    decision_id,
                     indicators=indicators,
                     market_data=market_data
                 )
             elif not decision.should_execute() and decision.action == "BUY":
                 reason = "confidence too low" if decision.confidence < 80.0 else "action not BUY"
                 logger.info(f"{symbol}: NOT executing BUY - {reason} (confidence: {decision.confidence}%)")
-                if self.analytics and decision_timestamp:
+                if self.analytics:
                     await self.analytics.update_decision_result(
-                        decision_timestamp=decision_timestamp,
+                        decision_id=decision_id,
                         executed=False,
                         trade_result={'reason': reason}
                     )
@@ -321,9 +321,9 @@ class TradingEngine:
             else:
                 logger.info(f"{symbol}: Holding - no action taken")
                 # Update analytics that decision was not executed
-                if self.analytics and decision_timestamp:
+                if self.analytics:
                     await self.analytics.update_decision_result(
-                        decision_timestamp=decision_timestamp,
+                        decision_id=decision_id,
                         executed=False,
                         trade_result={'reason': 'HOLD decision'}
                     )
@@ -414,7 +414,7 @@ class TradingEngine:
         symbol: str, 
         current_price: float, 
         decision, 
-        decision_timestamp: Optional[str] = None,
+        decision_id: str,
         indicators: Optional[Dict[str, Any]] = None,
         market_data: Optional[Dict[str, Any]] = None
     ) -> None:
@@ -425,7 +425,7 @@ class TradingEngine:
             symbol: Trading pair symbol
             current_price: Current market price
             decision: AI decision object
-            decision_timestamp: Timestamp of the AI decision
+            decision_id: Unique decision ID (UUID)
             indicators: Technical indicators at entry
             market_data: Market data at entry
         """
@@ -569,7 +569,8 @@ class TradingEngine:
                 ai_confidence=decision.confidence,
                 stop_loss=trade_params['stop_loss'],
                 take_profit=trade_params['take_profit'],
-                ai_metadata=ai_metadata
+                ai_metadata=ai_metadata,
+                decision_id=decision_id
             )
             
             # Update analytics that decision was executed
@@ -746,10 +747,10 @@ class TradingEngine:
                     'change_pct': ticker.get('percentage', 0)
                 }
                 
-                    await self.state_manager.update_trade_exit(
+                await self.state_manager.update_trade_exit(
                     trade_id=open_trade['trade_id'],
-                        exit_price=current_price,
-                        exit_reason=exit_reason,
+                    exit_price=current_price,
+                    exit_reason=exit_reason,
                     pnl=pnl_usdt,
                     exit_indicators=exit_indicators,
                     exit_market_data=exit_market_data
