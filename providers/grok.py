@@ -475,7 +475,7 @@ CRITICAL: Never output anything except the JSON object. No markdown, no code blo
         base_delay = 1.0  # Start with 1 second
         
         for attempt in range(max_retries):
-        try:
+            try:
             payload = {
                 "model": self.model,
                 "messages": [
