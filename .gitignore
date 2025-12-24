@@ -44,3 +44,10 @@ vps_diagnostics_*/
 test_*.py
 *_test.py
 .env.backup
+
+# Project plans and strategy (not for public repo - competitive advantage)
+PHASE_0_TASKS.md
+TODAY_TASKS.md
+PHASE_0_GAP_ANALYSIS.md
+ROADMAP.md
+BUSINESS_LOGIC.md
