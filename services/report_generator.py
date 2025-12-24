@@ -78,13 +78,17 @@ class ReportGenerator:
             for anomaly_type, count in anomaly_stats.get('by_type', {}).items():
                 report_lines.append(f"  {anomaly_type}: {count}")
             
+            # Build decision statistics section
+            parsing_errors = decision_stats.get('parsing_errors', 0)
+            parsing_error_rate = decision_stats.get('parsing_error_rate', 0)
+            
             report_lines.extend([
                 "",
                 "📊 DECISION STATISTICS",
                 "-" * 80,
                 f"Total Decisions: {decision_stats.get('total_decisions', 0)}",
                 f"Average Confidence: {decision_stats.get('avg_confidence', 0):.2f}%",
-                f"Parsing Errors: {decision_stats.get('parsing_errors', 0)} ({decision_stats.get('parsing_error_rate', 0):.2f}%)",
+                f"Parsing Errors: {parsing_errors} ({parsing_error_rate:.2f}%)",
                 "",
                 "By Action:",
                 f"  BUY: {decision_stats.get('by_action', {}).get('BUY', 0)}",
@@ -100,7 +104,7 @@ class ReportGenerator:
                 "",
                 "🎯 CONFIDENCE CALIBRATION",
                 "-" * 80,
-            ]
+            ])
             
             # Add confidence bucket analysis
             win_rates = ai_analysis.get('win_rate_by_confidence', {})
