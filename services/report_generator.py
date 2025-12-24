@@ -61,6 +61,36 @@ class ReportGenerator:
                 f"Sharpe Ratio: {metrics.get('sharpe_ratio', 0):.2f}",
                 f"Max Drawdown: {metrics.get('max_drawdown_pct', 0):.2f}%",
                 "",
+                "🚨 ANOMALY MONITORING (Task 6)",
+                "-" * 80,
+                f"Total Anomalies Detected: {anomaly_stats.get('total_anomalies', 0)}",
+                f"Anomaly Rate: {anomaly_stats.get('anomaly_rate', 0):.2f}%",
+                "",
+                "By Severity:",
+                f"  High: {anomaly_stats.get('by_severity', {}).get('high', 0)}",
+                f"  Medium: {anomaly_stats.get('by_severity', {}).get('medium', 0)}",
+                f"  Low: {anomaly_stats.get('by_severity', {}).get('low', 0)}",
+                "",
+                "By Type:",
+            ]
+            
+            # Add anomaly types
+            for anomaly_type, count in anomaly_stats.get('by_type', {}).items():
+                report_lines.append(f"  {anomaly_type}: {count}")
+            
+            report_lines.extend([
+                "",
+                "📊 DECISION STATISTICS",
+                "-" * 80,
+                f"Total Decisions: {decision_stats.get('total_decisions', 0)}",
+                f"Average Confidence: {decision_stats.get('avg_confidence', 0):.2f}%",
+                f"Parsing Errors: {decision_stats.get('parsing_errors', 0)} ({decision_stats.get('parsing_error_rate', 0):.2f}%)",
+                "",
+                "By Action:",
+                f"  BUY: {decision_stats.get('by_action', {}).get('BUY', 0)}",
+                f"  SELL: {decision_stats.get('by_action', {}).get('SELL', 0)}",
+                f"  HOLD: {decision_stats.get('by_action', {}).get('HOLD', 0)}",
+                "",
                 "🤖 AI PERFORMANCE ANALYSIS",
                 "-" * 80,
                 f"Total AI Decisions: {ai_analysis.get('total_decisions', 0)}",
