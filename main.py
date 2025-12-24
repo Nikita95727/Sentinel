@@ -15,6 +15,7 @@ from services.risk_manager import RiskManager
 from services.analytics import Analytics
 from services.report_generator import ReportGenerator
 from services.validator import SafetyValidator
+from services.ai_optimizer import AIOptimizer
 from storage.state_manager import StateManager
 
 
@@ -221,6 +222,12 @@ async def main():
         model=settings.grok_model
     )
     
+    # AI Optimizer (for caching and rate limiting)
+    ai_optimizer = AIOptimizer(
+        ai_provider=ai_provider,
+        cache_ttl_minutes=30  # Cache for 30 minutes
+    )
+    
     # Services
     analyzer = Analyzer()
     risk_manager = RiskManager(
@@ -241,6 +248,7 @@ async def main():
         risk_manager=risk_manager,
         state_manager=state_manager,
         analytics=analytics,
+        ai_optimizer=ai_optimizer,  # Pass AI optimizer
         symbols=initial_symbols,
         timeframe=settings.trading_timeframe,
         dry_run=settings.dry_run

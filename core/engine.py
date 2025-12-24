@@ -9,6 +9,7 @@ from core.base_ai import BaseAI
 from services.analyzer import Analyzer
 from services.risk_manager import RiskManager
 from services.analytics import Analytics
+from services.ai_optimizer import AIOptimizer
 from storage.state_manager import StateManager
 
 
@@ -23,6 +24,7 @@ class TradingEngine:
         risk_manager: RiskManager,
         state_manager: StateManager,
         analytics: Optional[Analytics] = None,
+        ai_optimizer: Optional[AIOptimizer] = None,
         symbols: Optional[List[str]] = None,
         timeframe: str = "30m",
         dry_run: bool = True
@@ -36,6 +38,8 @@ class TradingEngine:
             analyzer: Technical analyzer instance
             risk_manager: Risk manager instance
             state_manager: State manager instance
+            analytics: Analytics service instance
+            ai_optimizer: AI optimizer with caching (optional, will be created if None)
             symbols: List of trading pair symbols (default: ["BTC/USDT"])
             timeframe: Candle timeframe
             dry_run: If True, no real trades will be executed
@@ -49,6 +53,12 @@ class TradingEngine:
         self.active_symbols = symbols or ["BTC/USDT"]
         self.timeframe = timeframe
         self.dry_run = dry_run
+        
+        # Initialize AI optimizer if not provided
+        if ai_optimizer is None:
+            self.ai_optimizer = AIOptimizer(ai_provider, cache_ttl_minutes=30)
+        else:
+            self.ai_optimizer = ai_optimizer
         
         # Track positions per symbol
         self.positions: Dict[str, Optional[dict]] = {}
@@ -117,8 +127,14 @@ class TradingEngine:
             logger.info(
                 f"Indicators: RSI={indicators.get('rsi', 0):.2f}, "
                 f"EMA20={indicators.get('ema_20', 0):.2f}, "
-                f"EMA50={indicators.get('ema_50', 0):.2f}"
+                f"EMA50={indicators.get('ema_50', 0):.2f}, "
+                f"ATR%={indicators.get('atr_pct', 0):.2f}"
             )
+            
+            # Step 2.1: Technical filter - skip AI if signals don't pass
+            if not self._technical_filter_passed(indicators, symbol):
+                logger.info(f"{symbol}: Technical filter failed - skipping AI call")
+                return
             
             # Step 3: Get current ticker for precise price
             ticker = await self.exchange.get_ticker(symbol)
@@ -165,16 +181,27 @@ class TradingEngine:
             # Step 4: Get trading memory (last 5 trades for better learning)
             memory = await self.state_manager.get_recent_trades(limit=5)
             
-            # Step 5: Get AI decision
+            # Step 5: Get AI decision with optimizer (caching + rate limiting)
             logger.debug(f"Requesting AI decision for {symbol}...")
             logger.debug(f"Memory context: {len(memory)} recent trades")
             
-            decision = await self.ai_provider.analyze(
+            # Check if we have an open position
+            has_position = self.positions.get(symbol) is not None
+            
+            # Use AI optimizer for smart caching
+            decision = await self.ai_optimizer.get_analysis(
                 symbol=symbol,
                 market_data=market_data,
                 technical_indicators=indicators,
-                memory=memory
+                has_position=has_position,
+                memory=memory,
+                force=False
             )
+            
+            # If None returned (rate limited or cached), skip this cycle
+            if decision is None:
+                logger.debug(f"{symbol}: AI call skipped (rate limited or cached)")
+                return
             
             # Log decision with full context
             logger.info(
@@ -274,6 +301,76 @@ class TradingEngine:
             
         except Exception as e:
             logger.error(f"Error in cycle for {symbol}: {e}", exc_info=True)
+    
+    def _technical_filter_passed(
+        self, 
+        indicators: Dict[str, float],
+        symbol: str
+    ) -> bool:
+        """
+        Quick technical filter to skip AI calls for unpromising signals.
+        
+        Only passes signals that show clear potential, saving API costs.
+        
+        Args:
+            indicators: Technical indicators dictionary
+            symbol: Trading pair symbol
+            
+        Returns:
+            True if technical signals pass filter
+        """
+        rsi = indicators.get('rsi', 50)
+        ema_20 = indicators.get('ema_20', 0)
+        ema_50 = indicators.get('ema_50', 0)
+        volume_spike = indicators.get('volume_change_pct', 0) > 20  # 20% volume increase
+        atr_pct = indicators.get('atr_pct', 0)
+        
+        # Determine EMA trend
+        ema_trend = 'up' if ema_20 > ema_50 else 'down' if ema_20 < ema_50 else 'neutral'
+        
+        # Check if we have an open position
+        has_position = self.positions.get(symbol) is not None
+        
+        if has_position:
+            # For open positions: look for exit signals
+            sell_signal = (
+                rsi > 70 or  # Overbought
+                ema_trend == 'down'  # Downtrend
+            )
+            if sell_signal:
+                logger.debug(
+                    f"{symbol}: Technical filter PASSED (exit signal: "
+                    f"RSI={rsi:.1f}, EMA_trend={ema_trend})"
+                )
+                return True
+        else:
+            # For new positions: look for entry signals
+            buy_signal = (
+                rsi < 40 and  # Oversold
+                ema_trend == 'up' and  # Uptrend
+                (volume_spike or atr_pct < 10)  # Volume spike or moderate volatility
+            )
+            if buy_signal:
+                logger.debug(
+                    f"{symbol}: Technical filter PASSED (entry signal: "
+                    f"RSI={rsi:.1f}, EMA_trend={ema_trend}, "
+                    f"volume_spike={volume_spike}, ATR%={atr_pct:.2f})"
+                )
+                return True
+        
+        # If no clear signal, still allow if RSI is in neutral zone
+        # (to avoid missing opportunities)
+        if 35 <= rsi <= 65:
+            logger.debug(
+                f"{symbol}: Technical filter PASSED (neutral zone: RSI={rsi:.1f})"
+            )
+            return True
+        
+        logger.debug(
+            f"{symbol}: Technical filter FAILED (RSI={rsi:.1f}, "
+            f"EMA_trend={ema_trend}, volume_spike={volume_spike})"
+        )
+        return False
 
     async def _execute_buy(
         self, 
@@ -301,8 +398,16 @@ class TradingEngine:
                 logger.warning(f"Symbol {symbol} is blacklisted, skipping buy")
                 return
             
-            # Get trade parameters
-            trade_params = self.risk_manager.get_trade_params(current_price)
+            # Get trade parameters with dynamic calculations
+            volatility = indicators.get('atr_pct') if indicators else None
+            confidence = decision.confidence if decision else None
+            
+            trade_params = self.risk_manager.get_trade_params(
+                entry_price=current_price,
+                volatility=volatility,
+                confidence=confidence,
+                side='buy'
+            )
             
             # Validate trade
             logger.debug(f"Validating trade for {symbol}...")

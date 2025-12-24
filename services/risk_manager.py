@@ -54,14 +54,20 @@ class RiskManager:
     def calculate_position_size(
         self,
         entry_price: float,
-        stop_loss_price: Optional[float] = None
+        stop_loss_price: Optional[float] = None,
+        volatility: Optional[float] = None,
+        confidence: Optional[float] = None,
+        max_risk_pct: Optional[float] = None
     ) -> float:
         """
-        Calculate position size based on balance and risk.
+        Calculate position size dynamically based on volatility and AI confidence.
         
         Args:
             entry_price: Entry price for the trade
             stop_loss_price: Stop-loss price (if None, will be calculated)
+            volatility: ATR as percentage of price (for dynamic sizing)
+            confidence: AI confidence score (0-1, for dynamic sizing)
+            max_risk_pct: Maximum risk percentage (overrides default)
             
         Returns:
             Position size in base currency
@@ -71,14 +77,32 @@ class RiskManager:
                 logger.error("Invalid entry price")
                 return 0.0
             
+            # Use provided max_risk_pct or default
+            risk_pct = max_risk_pct if max_risk_pct is not None else self.stop_loss_pct
+            
             # Calculate stop-loss price if not provided
             if stop_loss_price is None:
-                stop_loss_price = self.calculate_stop_loss(entry_price)
+                stop_loss_price = self.calculate_stop_loss(entry_price, volatility)
             
-            # Calculate risk per trade (in USDT)
-            # Using 100% of balance for spot trading (no leverage)
-            # The actual risk is determined by stop-loss distance
-            risk_amount = self.balance * (self.stop_loss_pct / 100)
+            # Base risk amount
+            risk_amount = self.balance * (risk_pct / 100)
+            
+            # Dynamic adjustments
+            volatility_factor = 1.0
+            confidence_factor = 1.0
+            
+            # Adjust for volatility: high volatility = smaller position
+            if volatility is not None and volatility > 0:
+                # Normalize volatility (assume 1-10% is normal range)
+                # High volatility (>5%) reduces position size
+                volatility_factor = 1.0 / (1.0 + (volatility / 5.0))
+                logger.debug(f"Volatility factor: {volatility_factor:.2f} (volatility: {volatility:.2f}%)")
+            
+            # Adjust for AI confidence: low confidence = smaller position
+            if confidence is not None:
+                # confidence 0.5 = 50% size, 1.0 = 100% size
+                confidence_factor = max(0.5, min(1.0, confidence / 100.0))
+                logger.debug(f"Confidence factor: {confidence_factor:.2f} (confidence: {confidence:.1f}%)")
             
             # Calculate price distance to stop-loss
             price_distance = abs(entry_price - stop_loss_price)
@@ -87,19 +111,28 @@ class RiskManager:
                 logger.error("Stop-loss price equals entry price")
                 return 0.0
             
-            # Position size = risk amount / price distance
-            position_size = risk_amount / price_distance
+            # Base position size
+            base_position_size = risk_amount / price_distance
+            
+            # Apply dynamic factors
+            adjusted_position_size = base_position_size * volatility_factor * confidence_factor
             
             # For spot, we can use up to balance / entry_price
             max_position_size = self.balance / entry_price
             
             # Take the minimum to ensure we don't exceed balance
-            final_position_size = min(position_size, max_position_size)
+            final_position_size = min(adjusted_position_size, max_position_size)
+            
+            # Minimum position size ($5 worth)
+            min_position_usd = 5.0
+            min_position_size = min_position_usd / entry_price
+            final_position_size = max(final_position_size, min_position_size)
             
             logger.info(
                 f"Position size calculated: {final_position_size:.6f} "
                 f"(entry=${entry_price:.2f}, SL=${stop_loss_price:.2f}, "
-                f"risk=${risk_amount:.2f})"
+                f"risk=${risk_amount:.2f}, vol_factor={volatility_factor:.2f}, "
+                f"conf_factor={confidence_factor:.2f})"
             )
             
             return final_position_size
@@ -108,18 +141,50 @@ class RiskManager:
             logger.error(f"Error calculating position size: {e}")
             return 0.0
 
-    def calculate_stop_loss(self, entry_price: float) -> float:
+    def calculate_stop_loss(
+        self, 
+        entry_price: float,
+        volatility: Optional[float] = None,
+        side: str = 'buy'
+    ) -> float:
         """
-        Calculate stop-loss price based on entry and percentage.
+        Calculate stop-loss dynamically based on ATR (volatility).
         
         Args:
             entry_price: Entry price for the trade
+            volatility: ATR as percentage of price (if None, uses fixed %)
+            side: Trade side ('buy' or 'sell')
             
         Returns:
-            Stop-loss price (2% below entry for long positions)
+            Stop-loss price
         """
-        stop_loss = entry_price * (1 - self.stop_loss_pct / 100)
-        logger.debug(f"Stop-loss calculated: ${stop_loss:.2f} ({self.stop_loss_pct}% below ${entry_price:.2f})")
+        if volatility is not None and volatility > 0:
+            # Dynamic stop-loss: 2x ATR from entry
+            atr_multiplier = 2.0
+            stop_distance = volatility * atr_multiplier
+            
+            if side == 'buy':
+                stop_loss = entry_price * (1 - stop_distance / 100)
+            else:  # sell
+                stop_loss = entry_price * (1 + stop_distance / 100)
+            
+            logger.debug(
+                f"Dynamic stop-loss: ${stop_loss:.2f} "
+                f"({stop_distance:.2f}% from ${entry_price:.2f}, "
+                f"ATR={volatility:.2f}%, multiplier={atr_multiplier}x)"
+            )
+        else:
+            # Fallback to fixed percentage
+            if side == 'buy':
+                stop_loss = entry_price * (1 - self.stop_loss_pct / 100)
+            else:  # sell
+                stop_loss = entry_price * (1 + self.stop_loss_pct / 100)
+            
+            logger.debug(
+                f"Fixed stop-loss: ${stop_loss:.2f} "
+                f"({self.stop_loss_pct}% from ${entry_price:.2f})"
+            )
+        
         return stop_loss
 
     def calculate_take_profit(
@@ -227,19 +292,33 @@ class RiskManager:
         
         return validation
 
-    def get_trade_params(self, entry_price: float) -> Dict[str, float]:
+    def get_trade_params(
+        self, 
+        entry_price: float,
+        volatility: Optional[float] = None,
+        confidence: Optional[float] = None,
+        side: str = 'buy'
+    ) -> Dict[str, float]:
         """
-        Get complete trade parameters (position size, SL, TP).
+        Get complete trade parameters with dynamic calculations.
         
         Args:
             entry_price: Entry price for the trade
+            volatility: ATR as percentage of price
+            confidence: AI confidence score (0-100)
+            side: Trade side ('buy' or 'sell')
             
         Returns:
             Dictionary with all trade parameters
         """
-        stop_loss = self.calculate_stop_loss(entry_price)
-        take_profit = self.calculate_take_profit(entry_price, stop_loss)
-        position_size = self.calculate_position_size(entry_price, stop_loss)
+        stop_loss = self.calculate_stop_loss(entry_price, volatility, side)
+        take_profit = self.calculate_take_profit(entry_price, stop_loss, side)
+        position_size = self.calculate_position_size(
+            entry_price, 
+            stop_loss, 
+            volatility, 
+            confidence
+        )
         
         return {
             'entry_price': entry_price,
@@ -247,5 +326,7 @@ class RiskManager:
             'take_profit': take_profit,
             'position_size': position_size,
             'risk_pct': self.stop_loss_pct,
-            'risk_reward_ratio': self.min_risk_reward
+            'risk_reward_ratio': self.min_risk_reward,
+            'volatility': volatility,
+            'confidence': confidence
         }

@@ -6,6 +6,7 @@ from typing import Dict, List, Optional, Any
 from loguru import logger
 
 from core.base_exchange import BaseExchange
+from utils.resilience import retry_on_error, exchange_circuit
 
 
 class BybitProvider(BaseExchange):
@@ -46,6 +47,8 @@ class BybitProvider(BaseExchange):
             logger.error(f"Failed to initialize Bybit: {e}")
             raise
 
+    @exchange_circuit.call
+    @retry_on_error(max_attempts=3, delay_seconds=5, exceptions=(ccxt.NetworkError, ccxt.ExchangeError))
     async def fetch_ohlcv(
         self,
         symbol: str,
@@ -53,7 +56,7 @@ class BybitProvider(BaseExchange):
         limit: int = 100
     ) -> List[List[Any]]:
         """
-        Fetch OHLCV (candlestick) data.
+        Fetch OHLCV (candlestick) data with retry and circuit breaker.
         
         Args:
             symbol: Trading pair symbol (e.g., 'BTC/USDT')
@@ -63,32 +66,23 @@ class BybitProvider(BaseExchange):
         Returns:
             List of OHLCV data: [[timestamp, open, high, low, close, volume], ...]
         """
-        try:
-            if not self.exchange:
-                raise RuntimeError("Exchange not initialized")
-                
-            ohlcv = await self.exchange.fetch_ohlcv(
-                symbol=symbol,
-                timeframe=timeframe,
-                limit=limit
-            )
+        if not self.exchange:
+            raise RuntimeError("Exchange not initialized")
             
-            logger.debug(f"Fetched {len(ohlcv)} candles for {symbol} ({timeframe})")
-            return ohlcv
-            
-        except ccxt.NetworkError as e:
-            logger.error(f"Network error fetching OHLCV for {symbol}: {e}")
-            raise
-        except ccxt.ExchangeError as e:
-            logger.error(f"Exchange error fetching OHLCV for {symbol}: {e}")
-            raise
-        except Exception as e:
-            logger.error(f"Unexpected error fetching OHLCV for {symbol}: {e}")
-            raise
+        ohlcv = await self.exchange.fetch_ohlcv(
+            symbol=symbol,
+            timeframe=timeframe,
+            limit=limit
+        )
+        
+        logger.debug(f"Fetched {len(ohlcv)} candles for {symbol} ({timeframe})")
+        return ohlcv
 
+    @exchange_circuit.call
+    @retry_on_error(max_attempts=3, delay_seconds=5, exceptions=(ccxt.NetworkError, ccxt.ExchangeError))
     async def get_balance(self, currency: str = "USDT") -> float:
         """
-        Get account balance for a specific currency.
+        Get account balance with retry and circuit breaker.
         
         Args:
             currency: Currency code (default: 'USDT')
@@ -96,26 +90,17 @@ class BybitProvider(BaseExchange):
         Returns:
             Available balance
         """
-        try:
-            if not self.exchange:
-                raise RuntimeError("Exchange not initialized")
-                
-            balance = await self.exchange.fetch_balance()
-            free_balance = balance.get('free', {}).get(currency, 0.0)
+        if not self.exchange:
+            raise RuntimeError("Exchange not initialized")
             
-            logger.debug(f"Balance for {currency}: {free_balance}")
-            return float(free_balance or 0.0)
-            
-        except ccxt.NetworkError as e:
-            logger.error(f"Network error fetching balance: {e}")
-            raise
-        except ccxt.ExchangeError as e:
-            logger.error(f"Exchange error fetching balance: {e}")
-            raise
-        except Exception as e:
-            logger.error(f"Unexpected error fetching balance: {e}")
-            raise
+        balance = await self.exchange.fetch_balance()
+        free_balance = balance.get('free', {}).get(currency, 0.0)
+        
+        logger.debug(f"Balance for {currency}: {free_balance}")
+        return float(free_balance or 0.0)
 
+    @exchange_circuit.call
+    @retry_on_error(max_attempts=2, delay_seconds=5, exceptions=(ccxt.NetworkError,))
     async def create_market_order(
         self,
         symbol: str,
@@ -124,7 +109,7 @@ class BybitProvider(BaseExchange):
         params: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
-        Create a market order.
+        Create a market order with retry (fewer retries to avoid duplicates).
         
         Args:
             symbol: Trading pair symbol
@@ -135,16 +120,15 @@ class BybitProvider(BaseExchange):
         Returns:
             Order information
         """
-        try:
-            if not self.exchange:
-                raise RuntimeError("Exchange not initialized")
-                
-            order = await self.exchange.create_market_order(
-                symbol=symbol,
-                side=side,
-                amount=amount,
-                params=params or {}
-            )
+        if not self.exchange:
+            raise RuntimeError("Exchange not initialized")
+            
+        order = await self.exchange.create_market_order(
+            symbol=symbol,
+            side=side,
+            amount=amount,
+            params=params or {}
+        )
             
             logger.info(f"Market {side} order created: {symbol} amount={amount}, order_id={order.get('id')}")
             return order

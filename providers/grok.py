@@ -7,6 +7,7 @@ from datetime import datetime
 from loguru import logger
 
 from core.base_ai import BaseAI, AIDecision
+from utils.resilience import retry_on_error, ai_circuit
 
 
 class GrokProvider(BaseAI):
@@ -141,6 +142,8 @@ When recent trades are provided:
 CRITICAL: Never output anything except the JSON object. No markdown, no code blocks, no explanations outside JSON.
 """
 
+    @ai_circuit.call
+    @retry_on_error(max_attempts=2, delay_seconds=10, exceptions=(httpx.HTTPStatusError, httpx.TimeoutException, httpx.RequestError))
     async def analyze(
         self,
         symbol: str,
@@ -289,13 +292,74 @@ CRITICAL: Never output anything except the JSON object. No markdown, no code blo
             
         except Exception as e:
             logger.error(f"Error in Grok analysis: {e}")
-            # Return safe default decision on error
+            # Try technical fallback before returning error
+            try:
+                return self._technical_fallback(technical_indicators, symbol)
+            except Exception as fallback_error:
+                logger.error(f"Fallback also failed: {fallback_error}")
+                # Return safe default decision on error
+                return AIDecision(
+                    action="HOLD",
+                    confidence=0.0,
+                    reasoning=f"Error during analysis: {str(e)}",
+                    risk_level="high",
+                    additional_context={"error": str(e), "fallback_failed": True}
+                )
+    
+    def _technical_fallback(
+        self, 
+        technical_indicators: Dict[str, float],
+        symbol: str
+    ) -> AIDecision:
+        """
+        Fallback decision based on technical indicators when AI fails.
+        
+        Args:
+            technical_indicators: Technical indicators dictionary
+            symbol: Trading pair symbol
+            
+        Returns:
+            AIDecision based on technical analysis only
+        """
+        rsi = technical_indicators.get('rsi', 50)
+        ema_20 = technical_indicators.get('ema_20', 0)
+        ema_50 = technical_indicators.get('ema_50', 0)
+        
+        # Simple logic based on RSI and EMA
+        if rsi < 30 and ema_20 > ema_50:
+            return AIDecision(
+                action="BUY",
+                confidence=60.0,
+                reasoning=(
+                    f"Technical fallback: RSI {rsi:.1f} (oversold), "
+                    f"EMA20 > EMA50 (bullish trend). "
+                    f"AI unavailable, using technical indicators only."
+                ),
+                risk_level="medium",
+                additional_context={"source": "fallback", "rsi": rsi, "ema_trend": "bullish"}
+            )
+        elif rsi > 70 or ema_20 < ema_50:
+            return AIDecision(
+                action="SELL",
+                confidence=60.0,
+                reasoning=(
+                    f"Technical fallback: RSI {rsi:.1f} (overbought) or "
+                    f"EMA20 < EMA50 (bearish trend). "
+                    f"AI unavailable, using technical indicators only."
+                ),
+                risk_level="medium",
+                additional_context={"source": "fallback", "rsi": rsi, "ema_trend": "bearish"}
+            )
+        else:
             return AIDecision(
                 action="HOLD",
-                confidence=0.0,
-                reasoning=f"Error during analysis: {str(e)}",
-                risk_level="high",
-                additional_context={"error": str(e)}
+                confidence=50.0,
+                reasoning=(
+                    f"Technical fallback: RSI {rsi:.1f} (neutral), "
+                    f"no clear signal. AI unavailable."
+                ),
+                risk_level="low",
+                additional_context={"source": "fallback", "rsi": rsi}
             )
 
     def _build_analysis_prompt(
