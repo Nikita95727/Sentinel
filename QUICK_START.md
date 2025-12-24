@@ -178,7 +178,30 @@ kill -9 <PID>
 
 ## Автозапуск при перезагрузке
 
-### Вариант 1: Systemd (рекомендуется)
+### Вариант 1: PM2 (рекомендуется для продакшена)
+
+PM2 автоматически настроен при запуске через `ecosystem.config.js`:
+
+```bash
+# Запуск через PM2
+cd /var/www/Sentinel
+pm2 start ecosystem.config.js
+
+# Сохранить конфигурацию для автозапуска
+pm2 save
+
+# Настроить автозапуск при перезагрузке (выполняется автоматически)
+pm2 startup
+
+# Управление
+pm2 status              # Статус
+pm2 logs sentinel-bot    # Логи
+pm2 restart sentinel-bot # Перезапуск
+pm2 stop sentinel-bot    # Остановка
+pm2 monit                # Мониторинг в реальном времени
+```
+
+### Вариант 2: Systemd
 
 При развертывании через `./deploy.sh` с правами root будет создан systemd service:
 
@@ -193,7 +216,7 @@ sudo systemctl start sentinel-bot
 sudo systemctl status sentinel-bot
 ```
 
-### Вариант 2: Cron
+### Вариант 3: Cron
 
 Добавить в crontab:
 
