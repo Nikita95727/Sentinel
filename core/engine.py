@@ -574,11 +574,11 @@ class TradingEngine:
             )
             
             # Update analytics that decision was executed
-            if self.analytics and decision_timestamp:
+            if self.analytics:
                 await self.analytics.update_decision_result(
-                    decision_timestamp=decision_timestamp,
+                    decision_id=decision_id,
                     executed=True
-            )
+                )
             
             logger.success(f"Position opened: {symbol} @ ${current_price:.2f}")
             
