@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     log_retention: str = "30 days"
     
     # Storage
-    storage_path: str = "storage/history.json"
+    storage_path: str = "storage/trades.jsonl"  # JSONL format for Grok-friendly learning
     
     
 # Global settings instance

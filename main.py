@@ -12,6 +12,9 @@ from providers.bybit import BybitProvider
 from providers.grok import GrokProvider
 from services.analyzer import Analyzer
 from services.risk_manager import RiskManager
+from services.analytics import Analytics
+from services.report_generator import ReportGenerator
+from services.validator import SafetyValidator
 from storage.state_manager import StateManager
 
 
@@ -110,6 +113,35 @@ async def main():
     # Setup logging
     setup_logging()
     
+    # Validate configuration
+    logger.info("Validating configuration...")
+    readiness = SafetyValidator.check_production_readiness()
+    
+    if readiness['blockers']:
+        logger.error("=" * 80)
+        logger.error("CONFIGURATION ERRORS DETECTED")
+        logger.error("=" * 80)
+        for blocker in readiness['blockers']:
+            logger.error(f"❌ {blocker}")
+        logger.error("=" * 80)
+        logger.error("Please fix these issues before starting the bot.")
+        sys.exit(1)
+    
+    config_validation = readiness.get('config_validation', {})
+    if config_validation.get('warnings'):
+        logger.warning("=" * 80)
+        logger.warning("CONFIGURATION WARNINGS")
+        logger.warning("=" * 80)
+        for warning in config_validation['warnings']:
+            logger.warning(f"⚠️  {warning}")
+        logger.warning("=" * 80)
+    
+    if readiness['recommendations']:
+        logger.info("Recommendations:")
+        for rec in readiness['recommendations']:
+            logger.info(f"💡 {rec}")
+    
+    logger.info(f"Production Readiness: {readiness['status']} (Score: {readiness['score']}/100)")
     logger.info("=" * 80)
     logger.info("SENTINEL AI TRADING BOT WITH DAILY SCREENER")
     logger.info("=" * 80)
@@ -147,6 +179,8 @@ async def main():
         min_risk_reward=settings.min_risk_reward
     )
     state_manager = StateManager(storage_path=settings.storage_path)
+    analytics = Analytics(storage_path="storage/analytics.json")
+    report_generator = ReportGenerator(analytics=analytics, state_manager=state_manager)
     
     # Trading engine (initially with fallback symbol)
     initial_symbols = [settings.trading_symbol] if hasattr(settings, 'trading_symbol') else ["BTC/USDT"]
@@ -156,6 +190,7 @@ async def main():
         analyzer=analyzer,
         risk_manager=risk_manager,
         state_manager=state_manager,
+        analytics=analytics,
         symbols=initial_symbols,
         timeframe=settings.trading_timeframe,
         dry_run=settings.dry_run
@@ -185,6 +220,24 @@ async def main():
         trigger=IntervalTrigger(minutes=settings.cycle_interval_minutes),
         id='trading_cycle',
         name='Trading Cycle',
+        replace_existing=True
+    )
+    
+    # Add daily report generation job (runs once per day at midnight UTC)
+    async def generate_daily_report_job():
+        """Generate and log daily report."""
+        try:
+            report = await report_generator.generate_daily_report()
+            logger.info("\n" + report)
+        except Exception as e:
+            logger.error(f"Error generating daily report: {e}")
+    
+    from apscheduler.triggers.cron import CronTrigger
+    scheduler.add_job(
+        generate_daily_report_job,
+        trigger=CronTrigger(hour=0, minute=0),  # Midnight UTC
+        id='daily_report',
+        name='Daily Report Generation',
         replace_existing=True
     )
     

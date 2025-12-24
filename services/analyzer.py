@@ -59,10 +59,35 @@ class Analyzer:
             # Calculate additional useful metrics
             indicators['price_change_pct'] = self._calculate_price_change(df)
             
+            # Calculate indicator changes (momentum)
+            indicators['rsi_change'] = self._calculate_indicator_change(df, 'rsi', length=14)
+            indicators['ema_20_change'] = self._calculate_ema_change(df, length=20)
+            indicators['ema_50_change'] = self._calculate_ema_change(df, length=50)
+            
+            # Volume trend analysis
+            indicators['volume_trend'] = self._calculate_volume_trend(df)
+            indicators['volume_avg'] = float(df['volume'].tail(20).mean()) if len(df) >= 20 else indicators['volume']
+            indicators['volume_ratio'] = indicators['volume'] / indicators['volume_avg'] if indicators['volume_avg'] > 0 else 1.0
+            
+            # Price action patterns
+            indicators['price_vs_ema20'] = ((indicators['current_price'] - indicators['ema_20']) / indicators['ema_20']) * 100 if indicators['ema_20'] > 0 else 0
+            indicators['price_vs_ema50'] = ((indicators['current_price'] - indicators['ema_50']) / indicators['ema_50']) * 100 if indicators['ema_50'] > 0 else 0
+            
+            # ATR as percentage of price (normalized volatility)
+            indicators['atr_pct'] = (indicators['atr'] / indicators['current_price']) * 100 if indicators['current_price'] > 0 else 0
+            
+            # Trend strength (distance between EMAs)
+            if indicators['ema_20'] > 0 and indicators['ema_50'] > 0:
+                indicators['trend_strength'] = abs((indicators['ema_20'] - indicators['ema_50']) / indicators['ema_50']) * 100
+            else:
+                indicators['trend_strength'] = 0.0
+            
             logger.debug(
-                f"Indicators calculated: RSI={indicators['rsi']:.2f}, "
-                f"EMA20={indicators['ema_20']:.2f}, EMA50={indicators['ema_50']:.2f}, "
-                f"ATR={indicators['atr']:.4f}"
+                f"Indicators calculated: RSI={indicators['rsi']:.2f} (Δ{indicators.get('rsi_change', 0):+.2f}), "
+                f"EMA20={indicators['ema_20']:.2f} (Δ{indicators.get('ema_20_change', 0):+.2f}%), "
+                f"EMA50={indicators['ema_50']:.2f} (Δ{indicators.get('ema_50_change', 0):+.2f}%), "
+                f"ATR={indicators['atr']:.4f} ({indicators.get('atr_pct', 0):.2f}%), "
+                f"Volume trend: {indicators.get('volume_trend', 'unknown')}"
             )
             
             return indicators
@@ -119,6 +144,90 @@ class Analyzer:
         except Exception:
             return 0.0
 
+    def _calculate_indicator_change(self, df: pd.DataFrame, indicator_name: str, length: int = 14) -> float:
+        """
+        Calculate change in indicator over last few periods.
+        
+        Args:
+            df: OHLCV DataFrame
+            indicator_name: Name of indicator ('rsi')
+            length: Period for indicator calculation
+            
+        Returns:
+            Change in indicator value
+        """
+        try:
+            if len(df) < length + 5:
+                return 0.0
+            
+            if indicator_name == 'rsi':
+                rsi = ta.rsi(df['close'], length=length)
+                if len(rsi) >= 2:
+                    current = float(rsi.iloc[-1])
+                    previous = float(rsi.iloc[-2])
+                    return current - previous
+            
+            return 0.0
+        except Exception:
+            return 0.0
+
+    def _calculate_ema_change(self, df: pd.DataFrame, length: int) -> float:
+        """
+        Calculate percentage change in EMA over last few periods.
+        
+        Args:
+            df: OHLCV DataFrame
+            length: EMA period
+            
+        Returns:
+            Percentage change in EMA
+        """
+        try:
+            if len(df) < length + 5:
+                return 0.0
+            
+            ema = ta.ema(df['close'], length=length)
+            if len(ema) >= 5:
+                current = float(ema.iloc[-1])
+                previous_5 = float(ema.iloc[-5])
+                if previous_5 > 0:
+                    return ((current - previous_5) / previous_5) * 100
+            
+            return 0.0
+        except Exception:
+            return 0.0
+
+    def _calculate_volume_trend(self, df: pd.DataFrame) -> str:
+        """
+        Calculate volume trend (increasing, decreasing, stable).
+        
+        Args:
+            df: OHLCV DataFrame
+            
+        Returns:
+            Volume trend: 'increasing', 'decreasing', or 'stable'
+        """
+        try:
+            if len(df) < 10:
+                return 'unknown'
+            
+            recent_volume = df['volume'].tail(5).mean()
+            previous_volume = df['volume'].tail(10).head(5).mean()
+            
+            if previous_volume == 0:
+                return 'unknown'
+            
+            change_pct = ((recent_volume - previous_volume) / previous_volume) * 100
+            
+            if change_pct > 10:
+                return 'increasing'
+            elif change_pct < -10:
+                return 'decreasing'
+            else:
+                return 'stable'
+        except Exception:
+            return 'unknown'
+
     def _get_default_indicators(self) -> Dict[str, float]:
         """
         Get default indicators when calculation fails.
@@ -133,7 +242,17 @@ class Analyzer:
             'ema_50': 0.0,
             'current_price': 0.0,
             'volume': 0.0,
-            'price_change_pct': 0.0
+            'price_change_pct': 0.0,
+            'rsi_change': 0.0,
+            'ema_20_change': 0.0,
+            'ema_50_change': 0.0,
+            'volume_trend': 'unknown',
+            'volume_avg': 0.0,
+            'volume_ratio': 1.0,
+            'price_vs_ema20': 0.0,
+            'price_vs_ema50': 0.0,
+            'atr_pct': 0.0,
+            'trend_strength': 0.0
         }
 
     def is_trending_up(self, indicators: Dict[str, float]) -> bool:

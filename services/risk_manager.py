@@ -175,28 +175,48 @@ class RiskManager:
             'reasons': []
         }
         
+        logger.debug(f"Risk validation for {symbol}:")
+        logger.debug(f"  Entry price: ${entry_price:.2f}")
+        logger.debug(f"  Position size: {position_size:.6f}")
+        logger.debug(f"  Balance: ${self.balance:.2f}")
+        
         # Check blacklist
         if not self.is_symbol_allowed(symbol):
             validation['is_valid'] = False
-            validation['reasons'].append(f"Symbol {symbol} is blacklisted")
+            reason = f"Symbol {symbol} is blacklisted"
+            validation['reasons'].append(reason)
+            logger.warning(f"  ❌ {reason}")
+        else:
+            logger.debug(f"  ✅ Symbol not blacklisted")
         
         # Check entry price
         if entry_price <= 0:
             validation['is_valid'] = False
-            validation['reasons'].append("Invalid entry price")
+            reason = "Invalid entry price"
+            validation['reasons'].append(reason)
+            logger.warning(f"  ❌ {reason}")
+        else:
+            logger.debug(f"  ✅ Entry price valid")
         
         # Check position size
         if position_size <= 0:
             validation['is_valid'] = False
-            validation['reasons'].append("Invalid position size")
+            reason = "Invalid position size"
+            validation['reasons'].append(reason)
+            logger.warning(f"  ❌ {reason}")
+        else:
+            logger.debug(f"  ✅ Position size valid")
         
         # Check if position size exceeds balance
         trade_value = entry_price * position_size
+        logger.debug(f"  Trade value: ${trade_value:.2f}")
         if trade_value > self.balance:
             validation['is_valid'] = False
-            validation['reasons'].append(
-                f"Trade value ${trade_value:.2f} exceeds balance ${self.balance:.2f}"
-            )
+            reason = f"Trade value ${trade_value:.2f} exceeds balance ${self.balance:.2f}"
+            validation['reasons'].append(reason)
+            logger.warning(f"  ❌ {reason}")
+        else:
+            logger.debug(f"  ✅ Trade value within balance")
         
         if validation['is_valid']:
             logger.info(f"Trade validation passed for {symbol}")

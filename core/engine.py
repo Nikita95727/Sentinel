@@ -1,12 +1,14 @@
 """Main trading engine orchestrating all components."""
 
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
+from datetime import datetime
 from loguru import logger
 
 from core.base_exchange import BaseExchange
 from core.base_ai import BaseAI
 from services.analyzer import Analyzer
 from services.risk_manager import RiskManager
+from services.analytics import Analytics
 from storage.state_manager import StateManager
 
 
@@ -20,6 +22,7 @@ class TradingEngine:
         analyzer: Analyzer,
         risk_manager: RiskManager,
         state_manager: StateManager,
+        analytics: Optional[Analytics] = None,
         symbols: Optional[List[str]] = None,
         timeframe: str = "30m",
         dry_run: bool = True
@@ -42,6 +45,7 @@ class TradingEngine:
         self.analyzer = analyzer
         self.risk_manager = risk_manager
         self.state_manager = state_manager
+        self.analytics = analytics
         self.active_symbols = symbols or ["BTC/USDT"]
         self.timeframe = timeframe
         self.dry_run = dry_run
@@ -120,16 +124,51 @@ class TradingEngine:
             ticker = await self.exchange.get_ticker(symbol)
             current_price = ticker.get('last', indicators.get('current_price', 0))
             
+            # Step 3.1: Get BTC trend for market context (if not BTC itself)
+            btc_trend = None
+            btc_rsi = None
+            if symbol != "BTC/USDT":
+                try:
+                    btc_ohlcv = await self.exchange.fetch_ohlcv("BTC/USDT", timeframe=self.timeframe, limit=50)
+                    if btc_ohlcv and len(btc_ohlcv) >= 50:
+                        btc_indicators = self.analyzer.calculate_indicators(btc_ohlcv)
+                        btc_trend = "bullish" if btc_indicators.get('ema_20', 0) > btc_indicators.get('ema_50', 0) else "bearish"
+                        btc_rsi = btc_indicators.get('rsi', 50)
+                except Exception as e:
+                    logger.debug(f"Could not fetch BTC trend: {e}")
+            
+            # Get market session and day of week
+            from datetime import datetime
+            utc_now = datetime.utcnow()
+            hour = utc_now.hour
+            day_of_week = utc_now.strftime('%A')
+            
+            # Determine market session
+            if 0 <= hour < 8:
+                market_session = "Asia"
+            elif 8 <= hour < 16:
+                market_session = "Europe"
+            else:
+                market_session = "US"
+            
             market_data = {
                 'price': current_price,
                 'volume': ticker.get('baseVolume', indicators.get('volume', 0)),
-                'change_pct': ticker.get('percentage', 0)
+                'change_pct': ticker.get('percentage', 0),
+                'market_session': market_session,
+                'day_of_week': day_of_week,
+                'hour_utc': hour,
+                'btc_trend': btc_trend,
+                'btc_rsi': btc_rsi if 'btc_rsi' in locals() else None
             }
             
-            # Step 4: Get trading memory (last 3 trades)
-            memory = await self.state_manager.get_recent_trades(limit=3)
+            # Step 4: Get trading memory (last 5 trades for better learning)
+            memory = await self.state_manager.get_recent_trades(limit=5)
             
             # Step 5: Get AI decision
+            logger.debug(f"Requesting AI decision for {symbol}...")
+            logger.debug(f"Memory context: {len(memory)} recent trades")
+            
             decision = await self.ai_provider.analyze(
                 symbol=symbol,
                 market_data=market_data,
@@ -137,25 +176,97 @@ class TradingEngine:
                 memory=memory
             )
             
+            # Log decision with full context
             logger.info(
                 f"AI Decision: {decision.action} "
                 f"(Confidence: {decision.confidence}%) - {decision.reasoning}"
             )
             
+            # Log validation result if available
+            validation = decision.additional_context.get('validation', {}) if decision.additional_context else {}
+            if validation:
+                is_valid = validation.get('is_valid', True)
+                warnings = validation.get('warnings', [])
+                logger.debug(f"Decision validation: {'VALID' if is_valid else 'INVALID'}")
+                if warnings:
+                    logger.debug(f"Validation warnings: {len(warnings)}")
+                    for warning in warnings:
+                        logger.debug(f"  ⚠️  {warning}")
+            
+            # Record AI decision for analytics and get timestamp
+            decision_timestamp = None
+            if self.analytics:
+                decision_timestamp = datetime.utcnow().isoformat()
+                await self.analytics.record_ai_decision(
+                    symbol=symbol,
+                    decision=decision.to_dict(),
+                    market_data=market_data,
+                    technical_indicators=indicators,
+                    context={'memory': memory}
+                )
+                
+                # Record market condition
+                await self.analytics.record_market_condition(
+                    symbol=symbol,
+                    indicators=indicators,
+                    price=current_price,
+                    volume=market_data.get('volume', 0)
+                )
+            
             # Step 6: Execute trading logic based on decision
             current_position = self.positions.get(symbol)
             
+            # Log execution decision logic
+            logger.debug(f"Execution check for {symbol}:")
+            logger.debug(f"  Decision action: {decision.action}")
+            logger.debug(f"  Should execute: {decision.should_execute()}")
+            logger.debug(f"  Current position: {'Yes' if current_position else 'No'}")
+            logger.debug(f"  Confidence: {decision.confidence}% (min required: 80%)")
+            
             if decision.should_execute() and not current_position:
-                await self._execute_buy(symbol, current_price, decision)
+                logger.info(f"{symbol}: Executing BUY - confidence {decision.confidence}% >= 80%, no open position")
+                await self._execute_buy(
+                    symbol, 
+                    current_price, 
+                    decision, 
+                    decision_timestamp,
+                    indicators=indicators,
+                    market_data=market_data
+                )
+            elif not decision.should_execute() and decision.action == "BUY":
+                reason = "confidence too low" if decision.confidence < 80.0 else "action not BUY"
+                logger.info(f"{symbol}: NOT executing BUY - {reason} (confidence: {decision.confidence}%)")
+                if self.analytics and decision_timestamp:
+                    await self.analytics.update_decision_result(
+                        decision_timestamp=decision_timestamp,
+                        executed=False,
+                        trade_result={'reason': reason}
+                    )
             elif current_position:
+                logger.debug(f"{symbol}: Checking exit conditions for open position")
                 await self._check_exit_conditions(symbol, current_price)
             else:
                 logger.info(f"{symbol}: Holding - no action taken")
+                # Update analytics that decision was not executed
+                if self.analytics and decision_timestamp:
+                    await self.analytics.update_decision_result(
+                        decision_timestamp=decision_timestamp,
+                        executed=False,
+                        trade_result={'reason': 'HOLD decision'}
+                    )
             
         except Exception as e:
             logger.error(f"Error in cycle for {symbol}: {e}", exc_info=True)
 
-    async def _execute_buy(self, symbol: str, current_price: float, decision) -> None:
+    async def _execute_buy(
+        self, 
+        symbol: str, 
+        current_price: float, 
+        decision, 
+        decision_timestamp: Optional[str] = None,
+        indicators: Optional[Dict[str, Any]] = None,
+        market_data: Optional[Dict[str, Any]] = None
+    ) -> None:
         """
         Execute a buy order.
         
@@ -163,6 +274,9 @@ class TradingEngine:
             symbol: Trading pair symbol
             current_price: Current market price
             decision: AI decision object
+            decision_timestamp: Timestamp of the AI decision
+            indicators: Technical indicators at entry
+            market_data: Market data at entry
         """
         try:
             # Check if symbol is allowed
@@ -174,14 +288,25 @@ class TradingEngine:
             trade_params = self.risk_manager.get_trade_params(current_price)
             
             # Validate trade
+            logger.debug(f"Validating trade for {symbol}...")
+            logger.debug(f"  Entry price: ${current_price:.2f}")
+            logger.debug(f"  Position size: {trade_params['position_size']:.6f}")
+            logger.debug(f"  Stop-loss: ${trade_params['stop_loss']:.2f} ({trade_params.get('stop_loss_pct', 0):.2f}%)")
+            logger.debug(f"  Take-profit: ${trade_params['take_profit']:.2f} ({trade_params.get('take_profit_pct', 0):.2f}%)")
+            
             validation = self.risk_manager.validate_trade(
                 symbol,
                 current_price,
                 trade_params['position_size']
             )
             
+            logger.debug(f"Risk validation result: {'VALID' if validation['is_valid'] else 'INVALID'}")
+            if validation.get('reasons'):
+                for reason in validation['reasons']:
+                    logger.debug(f"  Validation reason: {reason}")
+            
             if not validation['is_valid']:
-                logger.warning(f"Trade validation failed: {validation['reasons']}")
+                logger.warning(f"Trade validation failed for {symbol}: {validation['reasons']}")
                 return
             
             logger.info(f"Executing BUY order for {symbol}")
@@ -193,7 +318,7 @@ class TradingEngine:
             if not self.dry_run:
                 # Execute real order
                 order = await self.exchange.create_market_order(
-                    symbol=self.symbol,
+                    symbol=symbol,
                     side='buy',
                     amount=trade_params['position_size']
                 )
@@ -212,7 +337,11 @@ class TradingEngine:
                 'entry_reason': decision.reasoning
             }
             
-            # Add to history
+            # Add to history with full context for Grok learning
+            # Use indicators and market_data from parameters if provided, otherwise use defaults
+            entry_indicators = indicators if indicators is not None else {}
+            entry_market_data = market_data if market_data is not None else {}
+            
             await self.state_manager.add_trade(
                 symbol=symbol,
                 entry_price=current_price,
@@ -220,8 +349,20 @@ class TradingEngine:
                 position_size=trade_params['position_size'],
                 side='buy',
                 entry_reason=decision.reasoning,
-                status='open'
+                status='open',
+                entry_indicators=entry_indicators,
+                entry_market_data=entry_market_data,
+                ai_confidence=decision.confidence,
+                stop_loss=trade_params['stop_loss'],
+                take_profit=trade_params['take_profit']
             )
+            
+            # Update analytics that decision was executed
+            if self.analytics and decision_timestamp:
+                await self.analytics.update_decision_result(
+                    decision_timestamp=decision_timestamp,
+                    executed=True
+                )
             
             logger.success(f"Position opened: {symbol} @ ${current_price:.2f}")
             
@@ -299,7 +440,7 @@ class TradingEngine:
             if not self.dry_run:
                 # Execute real order
                 order = await self.exchange.create_market_order(
-                    symbol=self.symbol,
+                    symbol=symbol,
                     side='sell',
                     amount=position_size
                 )
@@ -309,18 +450,58 @@ class TradingEngine:
                 logger.info("[DRY RUN] Order simulated (not executed)")
             
             # Update trade in history
-            # Note: This is simplified - in production, you'd track trade IDs properly
+            # Find the last open trade for this symbol
             history = await self.state_manager.load_history()
             trades = history.get('trades', [])
-            if trades:
-                last_trade = trades[-1]
-                if last_trade.get('status') == 'open':
-                    await self.state_manager.update_trade_exit(
-                        trade_id=last_trade['id'],
-                        exit_price=current_price,
-                        exit_reason=exit_reason,
-                        pnl=pnl_usdt
-                    )
+            
+            # Find the most recent open trade for this symbol
+            open_trade = None
+            for trade in reversed(trades):
+                if (trade.get('symbol') == symbol and 
+                    trade.get('status') == 'open'):
+                    open_trade = trade
+                    break
+            
+            if open_trade:
+                # Get current indicators for exit context
+                ohlcv_data = await self.exchange.fetch_ohlcv(
+                    symbol=symbol,
+                    timeframe=self.timeframe,
+                    limit=100
+                )
+                exit_indicators = self.analyzer.calculate_indicators(ohlcv_data) if ohlcv_data else {}
+                ticker = await self.exchange.get_ticker(symbol)
+                exit_market_data = {
+                    'price': current_price,
+                    'volume': ticker.get('baseVolume', 0),
+                    'change_pct': ticker.get('percentage', 0)
+                }
+                
+                await self.state_manager.update_trade_exit(
+                    trade_id=open_trade['trade_id'],
+                    exit_price=current_price,
+                    exit_reason=exit_reason,
+                    pnl=pnl_usdt,
+                    exit_indicators=exit_indicators,
+                    exit_market_data=exit_market_data
+                )
+                
+                # Update analytics with trade result
+                if self.analytics:
+                        # Find the decision that led to this trade
+                        data = await self.analytics._load_data()
+                        for ai_decision in reversed(data.get('ai_decisions', [])):
+                            if (ai_decision.get('symbol') == symbol and 
+                                ai_decision.get('executed') and 
+                                not ai_decision.get('trade_result')):
+                                ai_decision['trade_result'] = {
+                                    'pnl': pnl_usdt,
+                                    'pnl_pct': pnl_pct,
+                                    'exit_reason': exit_reason,
+                                    'exit_price': current_price
+                                }
+                                await self.analytics._save_data(data)
+                                break
             
             # Clear position
             self.positions[symbol] = None
