@@ -16,6 +16,7 @@ from services.analytics import Analytics
 from services.report_generator import ReportGenerator
 from services.validator import SafetyValidator
 from services.ai_optimizer import AIOptimizer
+from services.sqlite_scheduler import SQLiteScheduler
 from storage.state_manager import StateManager
 from utils.error_handler import (
     log_error_with_context, ErrorCode, ErrorCategory, ErrorSeverity, error_handler
