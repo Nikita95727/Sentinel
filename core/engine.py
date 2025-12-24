@@ -10,6 +10,7 @@ from services.analyzer import Analyzer
 from services.risk_manager import RiskManager
 from services.analytics import Analytics
 from services.ai_optimizer import AIOptimizer
+from services.sqlite_scheduler import SQLiteScheduler
 from storage.state_manager import StateManager
 from utils.error_handler import (
     log_error_with_context, ErrorCode, ErrorCategory, ErrorSeverity

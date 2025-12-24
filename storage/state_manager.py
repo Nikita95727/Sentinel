@@ -34,8 +34,6 @@ class StateManager:
         # SQLite sync (lazy initialization)
         self._sqlite_sync = None
         self._enable_sqlite_sync = enable_sqlite_sync
-        self._sync_queue = []  # Queue for batched syncs
-        self._last_sync_time = None
         
         # Ensure daily rotation on init
         self._ensure_daily_rotation()
@@ -51,34 +49,28 @@ class StateManager:
                 self._enable_sqlite_sync = False
         return self._sqlite_sync
     
-    async def _schedule_sync(self, delay_seconds: float = 5.0):
+    async def sync_to_sqlite(self) -> int:
         """
-        Schedule SQLite sync with debouncing (batches multiple writes).
+        Manually trigger SQLite sync for trades.
+        Called by scheduler once per day.
         
-        Args:
-            delay_seconds: Delay before sync to batch multiple writes
+        Returns:
+            Number of trades synced
         """
         if not self._enable_sqlite_sync:
-            return
+            return 0
         
         sqlite_sync = self._get_sqlite_sync()
         if not sqlite_sync:
-            return
+            return 0
         
-        # Cancel previous scheduled sync if exists
-        if hasattr(self, '_sync_task') and not self._sync_task.done():
-            self._sync_task.cancel()
-        
-        # Schedule new sync
-        async def _sync():
-            await asyncio.sleep(delay_seconds)
-            try:
-                await sqlite_sync.sync_trades(days_back=1)
-                logger.debug("SQLite sync completed for trades")
-            except Exception as e:
-                logger.warning(f"SQLite sync error: {e}")
-        
-        self._sync_task = asyncio.create_task(_sync())
+        try:
+            count = await sqlite_sync.sync_trades(days_back=7)  # Sync last 7 days
+            logger.info(f"SQLite sync completed: {count} trades synced")
+            return count
+        except Exception as e:
+            logger.error(f"SQLite sync error: {e}")
+            return 0
     
     def _get_current_file_path(self) -> Path:
         """
@@ -344,9 +336,6 @@ class StateManager:
             
             # Invalidate stats cache
             self._stats_cache = None
-            
-            # Schedule SQLite sync (debounced, batches writes)
-            await self._schedule_sync(delay_seconds=5.0)
             
             logger.info(f"Trade recorded: {symbol} {side} @ ${entry_price:.2f} (Status: {status})")
             
@@ -742,9 +731,6 @@ class StateManager:
             
             # Invalidate stats cache
             self._stats_cache = None
-            
-            # Schedule SQLite sync (debounced, batches writes)
-            await self._schedule_sync(delay_seconds=5.0)
             
             logger.info(f"Trade {trade_id} updated with exit info (P&L: ${pnl:.2f})")
             

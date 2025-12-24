@@ -31,7 +31,6 @@ class Analytics:
         # SQLite sync (lazy initialization)
         self._sqlite_sync = None
         self._enable_sqlite_sync = enable_sqlite_sync
-        self._sync_tasks = {}  # Track sync tasks per event type
         
         # Ensure daily rotation on init
         self._ensure_daily_rotation()
@@ -47,35 +46,35 @@ class Analytics:
                 self._enable_sqlite_sync = False
         return self._sqlite_sync
     
-    async def _schedule_sync(self, event_type: str, delay_seconds: float = 5.0):
+    async def sync_to_sqlite(self) -> Dict[str, int]:
         """
-        Schedule SQLite sync with debouncing (batches multiple writes).
+        Manually trigger SQLite sync for all analytics events.
+        Called by scheduler once per day.
         
-        Args:
-            event_type: Type of event to sync
-            delay_seconds: Delay before sync to batch multiple writes
+        Returns:
+            Dictionary with sync counts per event type
         """
         if not self._enable_sqlite_sync:
-            return
+            return {}
         
         sqlite_sync = self._get_sqlite_sync()
         if not sqlite_sync:
-            return
+            return {}
         
-        # Cancel previous scheduled sync for this event type if exists
-        if event_type in self._sync_tasks and not self._sync_tasks[event_type].done():
-            self._sync_tasks[event_type].cancel()
-        
-        # Schedule new sync
-        async def _sync():
-            await asyncio.sleep(delay_seconds)
-            try:
-                await sqlite_sync.sync_analytics(event_type, days_back=1)
-                logger.debug(f"SQLite sync completed for {event_type}")
-            except Exception as e:
-                logger.warning(f"SQLite sync error for {event_type}: {e}")
-        
-        self._sync_tasks[event_type] = asyncio.create_task(_sync())
+        try:
+            results = {}
+            event_types = ['ai_decisions', 'market_conditions', 'anomalies', 'decision_results']
+            
+            for event_type in event_types:
+                count = await sqlite_sync.sync_analytics(event_type, days_back=7)  # Sync last 7 days
+                results[event_type] = count
+            
+            total = sum(results.values())
+            logger.info(f"SQLite sync completed: {total} analytics events synced ({results})")
+            return results
+        except Exception as e:
+            logger.error(f"SQLite sync error: {e}")
+            return {}
 
     def _get_current_file_path(self, event_type: str = "ai_decisions") -> Path:
         """
