@@ -12,12 +12,13 @@ import pandas as pd
 class Analytics:
     """Advanced analytics service for trading performance and AI calibration."""
 
-    def __init__(self, storage_path: str = "storage/analytics"):
+    def __init__(self, storage_path: str = "storage/analytics", enable_sqlite_sync: bool = True):
         """
         Initialize analytics service with daily JSONL files.
         
         Args:
             storage_path: Path to analytics directory (will create daily files inside)
+            enable_sqlite_sync: Enable automatic SQLite synchronization (default: True)
         """
         self.storage_dir = Path(storage_path)
         self.storage_dir.mkdir(parents=True, exist_ok=True)
@@ -27,8 +28,54 @@ class Analytics:
         self._current_date: Optional[date] = None
         self._current_file_path: Optional[Path] = None
         
+        # SQLite sync (lazy initialization)
+        self._sqlite_sync = None
+        self._enable_sqlite_sync = enable_sqlite_sync
+        self._sync_tasks = {}  # Track sync tasks per event type
+        
         # Ensure daily rotation on init
         self._ensure_daily_rotation()
+    
+    def _get_sqlite_sync(self):
+        """Lazy initialization of SQLite sync."""
+        if self._sqlite_sync is None and self._enable_sqlite_sync:
+            try:
+                from storage.sqlite_sync import SQLiteSync
+                self._sqlite_sync = SQLiteSync(analytics_dir=str(self.storage_dir))
+            except Exception as e:
+                logger.warning(f"SQLite sync not available: {e}")
+                self._enable_sqlite_sync = False
+        return self._sqlite_sync
+    
+    async def _schedule_sync(self, event_type: str, delay_seconds: float = 5.0):
+        """
+        Schedule SQLite sync with debouncing (batches multiple writes).
+        
+        Args:
+            event_type: Type of event to sync
+            delay_seconds: Delay before sync to batch multiple writes
+        """
+        if not self._enable_sqlite_sync:
+            return
+        
+        sqlite_sync = self._get_sqlite_sync()
+        if not sqlite_sync:
+            return
+        
+        # Cancel previous scheduled sync for this event type if exists
+        if event_type in self._sync_tasks and not self._sync_tasks[event_type].done():
+            self._sync_tasks[event_type].cancel()
+        
+        # Schedule new sync
+        async def _sync():
+            await asyncio.sleep(delay_seconds)
+            try:
+                await sqlite_sync.sync_analytics(event_type, days_back=1)
+                logger.debug(f"SQLite sync completed for {event_type}")
+            except Exception as e:
+                logger.warning(f"SQLite sync error for {event_type}: {e}")
+        
+        self._sync_tasks[event_type] = asyncio.create_task(_sync())
 
     def _get_current_file_path(self, event_type: str = "ai_decisions") -> Path:
         """

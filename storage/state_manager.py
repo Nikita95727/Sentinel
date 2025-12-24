@@ -7,17 +7,19 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime, date
 from loguru import logger
 import asyncio
+import asyncio
 
 
 class StateManager:
     """Manages trading history in daily JSONL files for optimal Grok learning."""
 
-    def __init__(self, storage_path: str = "storage/trades"):
+    def __init__(self, storage_path: str = "storage/trades", enable_sqlite_sync: bool = True):
         """
         Initialize state manager with daily file rotation.
         
         Args:
             storage_path: Path to storage directory (will create daily files inside)
+            enable_sqlite_sync: Enable automatic SQLite synchronization (default: True)
         """
         self.storage_dir = Path(storage_path)
         self.storage_dir.mkdir(parents=True, exist_ok=True)
@@ -29,8 +31,54 @@ class StateManager:
         # Statistics cache (calculated on demand)
         self._stats_cache: Optional[Dict[str, Any]] = None
         
+        # SQLite sync (lazy initialization)
+        self._sqlite_sync = None
+        self._enable_sqlite_sync = enable_sqlite_sync
+        self._sync_queue = []  # Queue for batched syncs
+        self._last_sync_time = None
+        
         # Ensure daily rotation on init
         self._ensure_daily_rotation()
+    
+    def _get_sqlite_sync(self):
+        """Lazy initialization of SQLite sync."""
+        if self._sqlite_sync is None and self._enable_sqlite_sync:
+            try:
+                from storage.sqlite_sync import SQLiteSync
+                self._sqlite_sync = SQLiteSync(trades_dir=str(self.storage_dir))
+            except Exception as e:
+                logger.warning(f"SQLite sync not available: {e}")
+                self._enable_sqlite_sync = False
+        return self._sqlite_sync
+    
+    async def _schedule_sync(self, delay_seconds: float = 5.0):
+        """
+        Schedule SQLite sync with debouncing (batches multiple writes).
+        
+        Args:
+            delay_seconds: Delay before sync to batch multiple writes
+        """
+        if not self._enable_sqlite_sync:
+            return
+        
+        sqlite_sync = self._get_sqlite_sync()
+        if not sqlite_sync:
+            return
+        
+        # Cancel previous scheduled sync if exists
+        if hasattr(self, '_sync_task') and not self._sync_task.done():
+            self._sync_task.cancel()
+        
+        # Schedule new sync
+        async def _sync():
+            await asyncio.sleep(delay_seconds)
+            try:
+                await sqlite_sync.sync_trades(days_back=1)
+                logger.debug("SQLite sync completed for trades")
+            except Exception as e:
+                logger.warning(f"SQLite sync error: {e}")
+        
+        self._sync_task = asyncio.create_task(_sync())
     
     def _get_current_file_path(self) -> Path:
         """
@@ -296,6 +344,9 @@ class StateManager:
             
             # Invalidate stats cache
             self._stats_cache = None
+            
+            # Schedule SQLite sync (debounced, batches writes)
+            await self._schedule_sync(delay_seconds=5.0)
             
             logger.info(f"Trade recorded: {symbol} {side} @ ${entry_price:.2f} (Status: {status})")
             
@@ -691,6 +742,9 @@ class StateManager:
             
             # Invalidate stats cache
             self._stats_cache = None
+            
+            # Schedule SQLite sync (debounced, batches writes)
+            await self._schedule_sync(delay_seconds=5.0)
             
             logger.info(f"Trade {trade_id} updated with exit info (P&L: ${pnl:.2f})")
             
