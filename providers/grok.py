@@ -595,7 +595,7 @@ CRITICAL: Never output anything except the JSON object. No markdown, no code blo
             
             # Parse JSON
             try:
-            data = json.loads(response)
+                data = json.loads(response)
             except json.JSONDecodeError as e:
                 logger.error(f"Failed to parse Grok response as JSON: {e}")
                 logger.debug(f"Response was: {response[:500]}...")
