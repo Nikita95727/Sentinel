@@ -163,34 +163,39 @@ class TradingEngine:
             )
             
             # Step 2.1: Technical filter - skip AI if signals don't pass
+            # Get ticker early for price calculation
+            ticker = await self.exchange.get_ticker(symbol)
+            current_price = ticker.get('last', indicators.get('current_price', 0))
+            
             if not self._technical_filter_passed(indicators, symbol):
-                logger.info(f"{symbol}: Technical filter failed - skipping AI call")
-                # Log ABSTAIN decision
+                logger.info(f"{symbol}: Technical filter failed - skipping AI call (NO_AI_CALL)")
                 abstain_reason = self._get_technical_filter_failure_reason(indicators, symbol)
-                abstain_decision = AIDecision(
-                    action="ABSTAIN",
-                    confidence=0.0,
-                    reasoning=f"Technical filter failed: {abstain_reason}",
-                    risk_level="high",
-                    additional_context={
-                        'abstain_reason': abstain_reason,
-                        'indicators': indicators,
-                        'filter_type': 'technical_pre_filter'
-                    }
-                )
+                
+                # Calculate edge and costs for dataset quality
+                expected_edge = self._calculate_expected_edge(current_price, indicators, 0.0)  # 0 confidence for technical filter
+                total_costs = self._calculate_total_costs(current_price, indicators)
+                
+                # Check if negative edge after costs
+                if expected_edge <= total_costs:
+                    abstain_reason = f"{abstain_reason}, negative_edge_after_costs"
+                
+                # Log NO_AI_CALL event (not AI decision)
                 if self.analytics:
-                    await self.analytics.record_ai_decision(
+                    await self.analytics.record_no_ai_call(
                         symbol=symbol,
-                        decision=abstain_decision.to_dict(),
-                        market_data={'price': current_price, 'volume': ticker.get('baseVolume', 0)},
+                        reason=abstain_reason,
+                        market_data={
+                            'price': current_price,
+                            'volume': ticker.get('baseVolume', indicators.get('volume', 0))
+                        },
                         technical_indicators=indicators,
-                        context={'abstain': True, 'decision_id': abstain_decision.decision_id}
+                        expected_edge=expected_edge,
+                        total_costs=total_costs,
+                        context={'filter_type': 'technical_pre_filter'}
                     )
                 return
             
-            # Step 3: Get current ticker for precise price
-            ticker = await self.exchange.get_ticker(symbol)
-            current_price = ticker.get('last', indicators.get('current_price', 0))
+            # Step 3: Current price already obtained above (for technical filter)
             
             # Step 3.1: Get BTC trend for market context (if not BTC itself)
             btc_trend = None
@@ -300,11 +305,45 @@ class TradingEngine:
             # Calculate constraints for this decision (action_space already calculated above)
             constraints = self._get_constraints(symbol, current_price, indicators, market_data)
             
-            # Add constraints and action_space to decision context
+            # Calculate expected edge and total costs for dataset quality
+            expected_edge = self._calculate_expected_edge(current_price, indicators, decision.confidence)
+            total_costs = self._calculate_total_costs(current_price, indicators)
+            
+            # Check for negative edge after costs (TECHNICAL_ABSTAIN)
+            if expected_edge <= total_costs and decision.action == "BUY":
+                logger.info(f"{symbol}: Negative edge after costs ({expected_edge:.2f}% <= {total_costs:.2f}%) - converting to TECHNICAL_ABSTAIN")
+                decision.action = "ABSTAIN"
+                decision.abstain_type = "TECHNICAL_ABSTAIN"
+                decision.confidence = 0.0
+                decision.reasoning = f"Negative edge after costs: expected {expected_edge:.2f}% <= costs {total_costs:.2f}%. Original: {decision.reasoning}"
+                decision.exportable_for_api = False
+            
+            # Check confidence threshold (AI_ABSTAIN if confidence < threshold)
+            min_confidence = 80.0
+            if decision.confidence < min_confidence and decision.action == "BUY":
+                logger.info(f"{symbol}: Confidence {decision.confidence}% < {min_confidence}% - converting to AI_ABSTAIN")
+                decision.action = "ABSTAIN"
+                decision.abstain_type = "AI_ABSTAIN"
+                decision.reasoning = f"Low confidence ({decision.confidence}% < {min_confidence}%). Original: {decision.reasoning}"
+                decision.exportable_for_api = False
+            
+            # Set abstain_type for existing ABSTAIN decisions
+            if decision.action == "ABSTAIN" and not decision.abstain_type:
+                decision.abstain_type = "AI_ABSTAIN"  # Default if AI returned ABSTAIN
+            
+            # Determine exportable_for_api (if not already set)
+            if decision.exportable_for_api is True:  # Only if still True (not set to False above)
+                # Set to False if edge is minimal or decision is risky
+                if expected_edge < 0.5 or decision.risk_level == "high":
+                    decision.exportable_for_api = False
+            
+            # Add constraints, action_space, edge, and costs to decision context
             if decision.additional_context is None:
                 decision.additional_context = {}
             decision.additional_context['constraints'] = constraints
             decision.additional_context['action_space'] = action_space
+            decision.additional_context['expected_edge_percent'] = expected_edge
+            decision.additional_context['total_costs_percent'] = total_costs
             
             if self.analytics:
                 await self.analytics.record_ai_decision(
@@ -316,7 +355,9 @@ class TradingEngine:
                         'memory': memory, 
                         'decision_id': decision_id,
                         'constraints': constraints,
-                        'action_space': action_space
+                        'action_space': action_space,
+                        'expected_edge_percent': expected_edge,
+                        'total_costs_percent': total_costs
                     }
                 )
                 
@@ -326,20 +367,23 @@ class TradingEngine:
                     indicators=indicators,
                     price=current_price,
                     volume=market_data.get('volume', 0)
-            )
+                )
             
             # Step 6: Execute trading logic based on decision
-            # current_position already defined above
+            # Separate: reasoning (why), decision (what), execution_result (what happened)
+            execution_result = "NONE"
             
             # Log execution decision logic
             logger.debug(f"Execution check for {symbol}:")
-            logger.debug(f"  Decision action: {decision.action}")
-            logger.debug(f"  Should execute: {decision.should_execute()}")
+            logger.debug(f"  Reasoning: {decision.reasoning[:100]}...")
+            logger.debug(f"  Decision: {decision.action} (abstain_type: {decision.abstain_type})")
             logger.debug(f"  Current position: {'Yes' if current_position else 'No'}")
             logger.debug(f"  Confidence: {decision.confidence}% (min required: 80%)")
+            logger.debug(f"  Expected edge: {expected_edge:.2f}%, Total costs: {total_costs:.2f}%")
             
-            if decision.should_execute() and not current_position:
+            if decision.action == "BUY" and decision.should_execute() and not current_position:
                 logger.info(f"{symbol}: Executing BUY - confidence {decision.confidence}% >= 80%, no open position")
+                execution_result = "EXECUTED"
                 await self._execute_buy(
                     symbol, 
                     current_price, 
@@ -348,49 +392,83 @@ class TradingEngine:
                     indicators=indicators,
                     market_data=market_data
                 )
-            elif not decision.should_execute() and decision.action == "BUY":
-                # AI wanted to BUY but confidence too low - log as ABSTAIN
-                reason = "AI confidence too low" if decision.confidence < 80.0 else "action not BUY"
-                logger.info(f"{symbol}: NOT executing BUY - {reason} (confidence: {decision.confidence}%)")
+            elif decision.action == "ABSTAIN":
+                # Explicit ABSTAIN decision (already set abstain_type above)
+                abstain_type = decision.abstain_type or "AI_ABSTAIN"
+                logger.info(f"{symbol}: ABSTAIN decision ({abstain_type}) - no trade executed")
+                execution_result = "ABSTAINED"
                 
                 if self.analytics:
                     await self.analytics.update_decision_result(
                         decision_id=decision_id,
                         executed=False,
-                        trade_result={'reason': reason, 'action': 'ABSTAIN'}
+                        trade_result={
+                            'reasoning': decision.reasoning,
+                            'decision': decision.action,
+                            'abstain_type': abstain_type,
+                            'execution_result': execution_result,
+                            'expected_edge_percent': expected_edge,
+                            'total_costs_percent': total_costs
+                        }
                     )
             elif decision.action == "HOLD":
                 if current_position:
-                    # HOLD with position is valid - just log it
+                    # HOLD with position is valid
                     logger.info(f"{symbol}: HOLD decision - keeping position open")
+                    execution_result = "HELD"
                     if self.analytics:
                         await self.analytics.update_decision_result(
                             decision_id=decision_id,
                             executed=False,
-                            trade_result={'reason': 'HOLD decision - position maintained', 'action': 'HOLD'}
+                            trade_result={
+                                'reasoning': decision.reasoning,
+                                'decision': decision.action,
+                                'execution_result': execution_result
+                            }
                         )
                 else:
-                    # HOLD without position should not happen (validation should catch this)
-                    # But if it does, log as ABSTAIN
-                    logger.warning(f"{symbol}: HOLD decision without position - converting to ABSTAIN")
+                    # HOLD without position - convert to ABSTAIN
+                    logger.warning(f"{symbol}: HOLD decision without position - converting to RISK_ABSTAIN")
+                    decision.action = "ABSTAIN"
+                    decision.abstain_type = "RISK_ABSTAIN"
+                    decision.reasoning = f"Invalid HOLD without position. Original: {decision.reasoning}"
+                    execution_result = "ABSTAINED"
                     if self.analytics:
                         await self.analytics.update_decision_result(
                             decision_id=decision_id,
                             executed=False,
-                            trade_result={'reason': 'HOLD without position (invalid) - converted to ABSTAIN', 'action': 'ABSTAIN'}
+                            trade_result={
+                                'reasoning': decision.reasoning,
+                                'decision': decision.action,
+                                'abstain_type': 'RISK_ABSTAIN',
+                                'execution_result': execution_result
+                            }
                         )
             elif current_position:
                 logger.debug(f"{symbol}: Checking exit conditions for open position")
+                execution_result = "POSITION_CHECKED"
                 await self._check_exit_conditions(symbol, current_price)
             else:
                 # Unknown case - log as ABSTAIN
                 logger.info(f"{symbol}: No action taken - unknown state")
+                execution_result = "ABSTAINED"
                 if self.analytics:
                     await self.analytics.update_decision_result(
                         decision_id=decision_id,
                         executed=False,
-                        trade_result={'reason': 'unknown state', 'action': 'ABSTAIN'}
+                        trade_result={
+                            'reasoning': decision.reasoning if hasattr(decision, 'reasoning') else 'Unknown state',
+                            'decision': 'ABSTAIN',
+                            'abstain_type': 'RISK_ABSTAIN',
+                            'execution_result': execution_result,
+                            'reason': 'unknown state'
+                        }
                     )
+            
+            # Update decision with execution_result in context
+            if decision.additional_context is None:
+                decision.additional_context = {}
+            decision.additional_context['execution_result'] = execution_result
             
         except Exception as e:
             log_error_with_context(
@@ -402,6 +480,96 @@ class TradingEngine:
                     "has_position": self.positions.get(symbol) is not None
                 }
             )
+    
+    def _calculate_expected_edge(
+        self,
+        current_price: float,
+        indicators: Dict[str, float],
+        confidence: float
+    ) -> float:
+        """
+        Calculate expected edge percentage for a potential trade.
+        
+        Args:
+            current_price: Current market price
+            indicators: Technical indicators
+            confidence: AI confidence (0-100)
+            
+        Returns:
+            Expected edge percentage
+        """
+        # Base edge from confidence (higher confidence = higher expected edge)
+        confidence_factor = confidence / 100.0
+        
+        # RSI-based edge (optimal zone 50-65 gives positive edge)
+        rsi = indicators.get('rsi', 50)
+        rsi_edge = 0.0
+        if 50 <= rsi <= 65:
+            rsi_edge = 0.5  # Optimal zone
+        elif 40 <= rsi < 50:
+            rsi_edge = 0.2  # Slightly oversold
+        elif rsi < 40:
+            rsi_edge = -0.3  # Oversold (risky)
+        elif rsi > 65:
+            rsi_edge = -0.5  # Overbought (negative edge)
+        
+        # EMA trend strength
+        ema_20 = indicators.get('ema_20', 0)
+        ema_50 = indicators.get('ema_50', 0)
+        trend_strength = indicators.get('trend_strength', 0)
+        trend_edge = trend_strength * 0.1 if ema_20 > ema_50 else -0.2
+        
+        # Volume confirmation
+        volume_ratio = indicators.get('volume_ratio', 1.0)
+        volume_edge = (volume_ratio - 1.0) * 0.3 if volume_ratio > 1.0 else -0.2
+        
+        # Combine factors
+        expected_edge = (confidence_factor * 1.0) + rsi_edge + trend_edge + volume_edge
+        
+        return max(-2.0, min(5.0, expected_edge))  # Clamp between -2% and 5%
+    
+    def _calculate_total_costs(
+        self,
+        current_price: float,
+        indicators: Dict[str, float],
+        position_size: Optional[float] = None
+    ) -> float:
+        """
+        Calculate total costs percentage (fees + spread + slippage estimate).
+        
+        Args:
+            current_price: Current market price
+            indicators: Technical indicators
+            position_size: Position size in base currency (optional)
+            
+        Returns:
+            Total costs as percentage
+        """
+        # Trading fees (maker + taker average)
+        trading_fees_pct = 0.1  # 0.1% (0.05% maker + 0.05% taker average)
+        
+        # Spread estimate (bid-ask spread)
+        spread_pct = 0.05  # 0.05% typical spread for major pairs
+        
+        # Slippage estimate based on volume and volatility
+        volume_ratio = indicators.get('volume_ratio', 1.0)
+        atr_pct = indicators.get('atr_pct', 0)
+        
+        # Low volume = higher slippage
+        if volume_ratio < 0.5:
+            slippage_pct = 0.15  # High slippage
+        elif volume_ratio < 1.0:
+            slippage_pct = 0.10  # Medium slippage
+        else:
+            slippage_pct = 0.05  # Low slippage
+        
+        # High volatility = higher slippage
+        if atr_pct > 5.0:
+            slippage_pct += 0.05
+        
+        total_costs = trading_fees_pct + spread_pct + slippage_pct
+        
+        return total_costs
     
     def _get_constraints(
         self,

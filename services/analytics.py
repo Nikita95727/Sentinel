@@ -193,6 +193,59 @@ class Analytics:
             
         except Exception as e:
             logger.error(f"Error recording market condition: {e}")
+    
+    async def record_no_ai_call(
+        self,
+        symbol: str,
+        reason: str,
+        market_data: Dict[str, Any],
+        technical_indicators: Dict[str, float],
+        expected_edge: Optional[float] = None,
+        total_costs: Optional[float] = None,
+        context: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """
+        Record NO_AI_CALL event when AI is not called due to technical/risk filters.
+        
+        Args:
+            symbol: Trading pair symbol
+            reason: Reason for not calling AI (e.g., "low_volume", "negative_edge")
+            market_data: Current market data
+            technical_indicators: Technical indicators
+            expected_edge: Expected edge percentage (if calculated)
+            total_costs: Total costs percentage (if calculated)
+            context: Additional context
+        """
+        try:
+            from uuid import uuid4
+            decision_id = str(uuid4())
+            
+            record = {
+                'timestamp': datetime.utcnow().isoformat(),
+                'event_type': 'NO_AI_CALL',
+                'symbol': symbol,
+                'decision_id': decision_id,
+                'reason': reason,
+                'abstain_type': 'TECHNICAL_ABSTAIN',
+                'market_data': market_data,
+                'technical_indicators': technical_indicators,
+                'expected_edge_percent': expected_edge,
+                'total_costs_percent': total_costs,
+                'context': context or {},
+                'executed': False,
+                'execution_result': 'NONE',
+                'exportable_for_api': False  # NO_AI_CALL events are internal
+            }
+            
+            # Append to current day's JSONL file (same as ai_decisions)
+            current_file = self._get_current_file_path('ai_decisions')
+            async with aiofiles.open(current_file, 'a') as f:
+                await f.write(json.dumps(record, ensure_ascii=False) + '\n')
+            
+            logger.debug(f"Recorded NO_AI_CALL for {symbol}: {reason} (decision_id: {decision_id})")
+            
+        except Exception as e:
+            logger.error(f"Error recording NO_AI_CALL: {e}")
 
     async def update_decision_result(
         self,
@@ -202,34 +255,54 @@ class Analytics:
         trade_result: Optional[Dict[str, Any]] = None
     ) -> None:
         """
-        Update AI decision with execution result.
+        Update AI decision with execution result (JSONL format).
         
         Args:
-            decision_timestamp: Timestamp of the original decision
+            decision_id: Decision ID to update
+            decision_timestamp: Timestamp of the original decision (backward compatibility)
             executed: Whether the decision was executed
-            trade_result: Trade result data (P&L, exit reason, etc.)
+            trade_result: Trade result data (P&L, exit reason, execution_result, etc.)
         """
         try:
-            data = await self._load_data()
+            if not decision_id and not decision_timestamp:
+                logger.warning("update_decision_result called without decision_id or timestamp")
+                return
             
-            # Find the decision by decision_id (preferred) or timestamp (backward compatibility)
+            # Try to find the decision in current day's file
+            current_file = self._get_current_file_path('ai_decisions')
+            
+            # Read all lines from current file
+            lines = []
             found_decision = None
-            for decision in data.get('ai_decisions', []):
-                if decision_id:
-                    # Try to find by decision_id in decision dict or top level
-                    decision_record_id = decision.get('decision_id')
-                    if not decision_record_id:
-                        decision_data = decision.get('decision', {})
+            found_index = -1
+            
+            if current_file.exists():
+                async with aiofiles.open(current_file, 'r') as f:
+                    content = await f.read()
+                    lines = content.strip().split('\n') if content.strip() else []
+            
+            # Find the decision
+            for i, line in enumerate(lines):
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                    record_decision_id = record.get('decision_id')
+                    if not record_decision_id:
+                        decision_data = record.get('decision', {})
                         if isinstance(decision_data, dict):
-                            decision_record_id = decision_data.get('decision_id')
-                    if decision_record_id == decision_id:
-                        found_decision = decision
+                            record_decision_id = decision_data.get('decision_id')
+                    
+                    if decision_id and record_decision_id == decision_id:
+                        found_decision = record
+                        found_index = i
                         break
-                elif decision_timestamp:
-                    # Backward compatibility: find by timestamp
-                    if decision.get('timestamp') == decision_timestamp:
-                        found_decision = decision
+                    elif decision_timestamp and record.get('timestamp') == decision_timestamp:
+                        found_decision = record
+                        found_index = i
                         break
+                except json.JSONDecodeError:
+                    continue
             
             if not found_decision:
                 logger.warning(f"Decision not found for update (decision_id={decision_id}, timestamp={decision_timestamp})")
@@ -238,16 +311,29 @@ class Analytics:
             # Update the found decision
             found_decision['executed'] = executed
             if trade_result:
+                # Store execution_result, reasoning, decision separately for dataset quality
+                found_decision['execution_result'] = trade_result.get('execution_result', 'NONE')
                 found_decision['trade_result'] = trade_result
-            # Store decision_id if not already present
-            if decision_id:
-                if not found_decision.get('decision_id'):
-                    found_decision['decision_id'] = decision_id
+                
+                # Update decision dict if it exists
                 decision_data = found_decision.get('decision', {})
-                if isinstance(decision_data, dict) and not decision_data.get('decision_id'):
-                    decision_data['decision_id'] = decision_id
+                if isinstance(decision_data, dict):
+                    if 'abstain_type' in trade_result:
+                        decision_data['abstain_type'] = trade_result.get('abstain_type')
+                    if 'execution_result' in trade_result:
+                        decision_data['additional_context'] = decision_data.get('additional_context', {})
+                        decision_data['additional_context']['execution_result'] = trade_result.get('execution_result')
             
-            await self._save_data(data)
+            # Store decision_id if not already present
+            if decision_id and not found_decision.get('decision_id'):
+                found_decision['decision_id'] = decision_id
+            
+            # Write back the updated file
+            lines[found_index] = json.dumps(found_decision, ensure_ascii=False)
+            async with aiofiles.open(current_file, 'w') as f:
+                await f.write('\n'.join(lines) + '\n')
+            
+            logger.debug(f"Updated decision result for decision_id={decision_id}, executed={executed}")
             
         except Exception as e:
             logger.error(f"Error updating decision result: {e}")

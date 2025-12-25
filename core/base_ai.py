@@ -16,7 +16,9 @@ class AIDecision:
         reasoning: str,
         risk_level: str = "medium",
         additional_context: Optional[Dict[str, Any]] = None,
-        decision_id: Optional[str] = None
+        decision_id: Optional[str] = None,
+        abstain_type: Optional[str] = None,
+        exportable_for_api: bool = True
     ):
         """
         Initialize AI decision.
@@ -28,6 +30,8 @@ class AIDecision:
             risk_level: Risk assessment ('low', 'medium', 'high')
             additional_context: Any additional context data
             decision_id: Unique decision ID (UUID). If None, generates new UUID.
+            abstain_type: Type of ABSTAIN ('TECHNICAL_ABSTAIN', 'RISK_ABSTAIN', 'AI_ABSTAIN')
+            exportable_for_api: Whether this decision can be exported for API use
         """
         self.decision_id = decision_id if decision_id else str(uuid4())
         self.action = action.upper()
@@ -35,6 +39,8 @@ class AIDecision:
         self.reasoning = reasoning
         self.risk_level = risk_level
         self.additional_context = additional_context or {}
+        self.abstain_type = abstain_type
+        self.exportable_for_api = exportable_for_api
         self.timestamp = datetime.utcnow()
 
     def should_execute(self, min_confidence: float = 80.0) -> bool:
@@ -58,6 +64,8 @@ class AIDecision:
             "reasoning": self.reasoning,
             "risk_level": self.risk_level,
             "additional_context": self.additional_context,
+            "abstain_type": self.abstain_type,
+            "exportable_for_api": self.exportable_for_api,
             "timestamp": self.timestamp.isoformat()
         }
 
