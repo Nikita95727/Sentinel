@@ -238,7 +238,11 @@ class TradingEngine:
             logger.debug(f"Memory context: {len(memory)} recent trades")
             
             # Check if we have an open position
-            has_position = self.positions.get(symbol) is not None
+            current_position = self.positions.get(symbol)
+            has_position = current_position is not None
+            
+            # Calculate action_space before AI call
+            action_space = self._get_action_space(symbol, current_position)
             
             # Use AI optimizer for smart caching
             decision = await self.ai_optimizer.get_analysis(
@@ -247,7 +251,8 @@ class TradingEngine:
                 technical_indicators=indicators,
                 has_position=has_position,
                 memory=memory,
-                force=False
+                force=False,
+                action_space=action_space
             )
             
             # If None returned (rate limited or cached), skip this cycle
@@ -292,9 +297,8 @@ class TradingEngine:
             # Record AI decision for analytics and get decision_id
             decision_id = decision.decision_id
             
-            # Calculate constraints and action_space for this decision
+            # Calculate constraints for this decision (action_space already calculated above)
             constraints = self._get_constraints(symbol, current_price, indicators, market_data)
-            action_space = self._get_action_space(symbol, current_position)
             
             # Add constraints and action_space to decision context
             if decision.additional_context is None:
@@ -325,7 +329,7 @@ class TradingEngine:
             )
             
             # Step 6: Execute trading logic based on decision
-            current_position = self.positions.get(symbol)
+            # current_position already defined above
             
             # Log execution decision logic
             logger.debug(f"Execution check for {symbol}:")
@@ -356,14 +360,25 @@ class TradingEngine:
                         trade_result={'reason': reason, 'action': 'ABSTAIN'}
                     )
             elif decision.action == "HOLD":
-                logger.info(f"{symbol}: HOLD decision - no action taken")
-                # Log HOLD as ABSTAIN variant
-                if self.analytics:
-                    await self.analytics.update_decision_result(
-                        decision_id=decision_id,
-                        executed=False,
-                        trade_result={'reason': 'HOLD decision', 'action': 'ABSTAIN'}
-                    )
+                if current_position:
+                    # HOLD with position is valid - just log it
+                    logger.info(f"{symbol}: HOLD decision - keeping position open")
+                    if self.analytics:
+                        await self.analytics.update_decision_result(
+                            decision_id=decision_id,
+                            executed=False,
+                            trade_result={'reason': 'HOLD decision - position maintained', 'action': 'HOLD'}
+                        )
+                else:
+                    # HOLD without position should not happen (validation should catch this)
+                    # But if it does, log as ABSTAIN
+                    logger.warning(f"{symbol}: HOLD decision without position - converting to ABSTAIN")
+                    if self.analytics:
+                        await self.analytics.update_decision_result(
+                            decision_id=decision_id,
+                            executed=False,
+                            trade_result={'reason': 'HOLD without position (invalid) - converted to ABSTAIN', 'action': 'ABSTAIN'}
+                        )
             elif current_position:
                 logger.debug(f"{symbol}: Checking exit conditions for open position")
                 await self._check_exit_conditions(symbol, current_price)

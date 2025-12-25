@@ -6,7 +6,7 @@ Optimizes Grok API usage to stay within $5 budget for 2 weeks.
 import asyncio
 import hashlib
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from loguru import logger
 
 try:
@@ -141,7 +141,8 @@ class AIOptimizer:
         technical_indicators: Dict[str, float],
         has_position: bool = False,
         memory: Optional[list] = None,
-        force: bool = False
+        force: bool = False,
+        action_space: Optional[List[str]] = None
     ) -> Optional[Any]:
         """
         Get AI analysis with smart caching.
@@ -153,6 +154,7 @@ class AIOptimizer:
             has_position: Whether there's an open position
             memory: Recent trade history for context
             force: Force AI call regardless of cache/rate limit
+            action_space: List of allowed actions (e.g., ["BUY", "ABSTAIN"] or ["SELL", "HOLD"])
             
         Returns:
             AIDecision object or None if rate limited
@@ -163,19 +165,20 @@ class AIOptimizer:
         if not await self.should_call_ai(symbol, has_position, force):
             return None
         
-        # Generate cache key
+        # Generate cache key (include has_position and action_space in cache key for accuracy)
         price = market_data.get('price', 0)
         volume = market_data.get('volume', 0)
         rsi = technical_indicators.get('rsi', 50)
+        action_space_str = ','.join(sorted(action_space)) if action_space else ('pos' if has_position else 'nopos')
         
         market_hash = self._get_market_hash(symbol, price, volume, rsi)
-        cache_key = f"{symbol}:{market_hash}"
+        cache_key = f"{symbol}:{market_hash}:{action_space_str}"
         
         # Check cache
         if cache_key in self.cache and not force:
             self.stats['cache_hits'] += 1
             cached_decision = self.cache[cache_key]
-            logger.debug(f"Cache HIT for {symbol} (hash: {market_hash})")
+            logger.debug(f"Cache HIT for {symbol} (hash: {market_hash}, action_space: {action_space_str})")
             return cached_decision
         
         # Call AI
@@ -185,7 +188,9 @@ class AIOptimizer:
                 symbol=symbol,
                 market_data=market_data,
                 technical_indicators=technical_indicators,
-                memory=memory
+                memory=memory,
+                has_position=has_position,
+                action_space=action_space
             )
             
             # Save to cache
@@ -224,4 +229,5 @@ class AIOptimizer:
         """Clear the cache."""
         self.cache.clear()
         logger.info("AI optimizer cache cleared")
+
 

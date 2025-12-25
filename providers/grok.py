@@ -73,11 +73,18 @@ STRICT RULES:
 
 OUTPUT FORMAT (strict JSON only, no markdown, no additional text):
 {
-    "action": "BUY" | "SELL" | "HOLD",
+    "action": "BUY" | "SELL" | "HOLD" | "ABSTAIN",
     "confidence": 0-100,
     "reasoning": "STRUCTURED FORMAT: [Market Context] → [Indicator Analysis] → [Risk Assessment] → [Decision Rationale]",
     "risk_level": "low" | "medium" | "high"
 }
+
+CRITICAL ACTION RULES (MUST FOLLOW):
+- If NO open position: You can ONLY use "BUY" or "ABSTAIN". NEVER use "HOLD" or "SELL" when there's no position.
+- If HAS open position: You can ONLY use "SELL" or "HOLD". NEVER use "BUY" or "ABSTAIN" when there's a position.
+- HOLD means "keep the current position open" - it ONLY makes sense when you have a position.
+- ABSTAIN means "do not open a new position" - it ONLY makes sense when you have NO position.
+- The system will tell you the current position status and allowed actions in the prompt.
 
 REASONING STRUCTURE (MANDATORY):
 Your reasoning MUST follow this structure:
@@ -109,18 +116,26 @@ BUY (confidence >= 80%) - EXAMPLE BAD SETUP (AVOID):
 ❌ Price below EMA20 → REJECT, use HOLD
 ❌ Recent loss with similar RSI/EMA pattern → REJECT, use HOLD
 
-HOLD (default when uncertain) - EXAMPLES:
-- RSI > 75 or < 25 (extreme zones without confirmation)
-- EMA20 < EMA50 (bearish trend - NEVER buy in bearish trend)
-- Confidence < 80% (insufficient edge)
-- Recent losses with similar market conditions (learn from mistakes)
-- Unclear market direction (wait for clarity)
-- High volatility (ATR > 5%) without clear edge
-- Low volume (volume_ratio < 0.8) - weak interest
+HOLD (ONLY when you have an open position):
+- Keep position open when conditions are neutral or slightly favorable
+- Use when confidence is moderate (50-80%) and trend is still intact
+- Use when waiting for better exit conditions
+- NEVER use HOLD when you have NO position - use ABSTAIN instead
 
-SELL:
-- Already in position (this is handled by exit logic, not entry decision)
-- For entry decisions, use HOLD instead of SELL
+ABSTAIN (ONLY when you have NO open position):
+- Do not open a new position when conditions are uncertain
+- Use when RSI > 75 or < 25 (extreme zones without confirmation)
+- Use when EMA20 < EMA50 (bearish trend - NEVER buy in bearish trend)
+- Use when confidence < 80% (insufficient edge)
+- Use when recent losses with similar market conditions (learn from mistakes)
+- Use when unclear market direction (wait for clarity)
+- Use when high volatility (ATR > 5%) without clear edge
+- Use when low volume (volume_ratio < 0.8) - weak interest
+
+SELL (ONLY when you have an open position):
+- Exit position when conditions turn unfavorable
+- Use when RSI > 70 (overbought) or trend reverses
+- Use when stop-loss or take-profit conditions are met
 
 CONFIDENCE CALIBRATION (BE HONEST):
 - 80-85%: Good setup, but some reservations (minor concerns)
@@ -152,7 +167,9 @@ CRITICAL: Never output anything except the JSON object. No markdown, no code blo
         symbol: str,
         market_data: Dict[str, Any],
         technical_indicators: Dict[str, float],
-        memory: Optional[List[Dict[str, Any]]] = None
+        memory: Optional[List[Dict[str, Any]]] = None,
+        has_position: bool = False,
+        action_space: Optional[List[str]] = None
     ) -> AIDecision:
         """
         Analyze market conditions using Grok AI with validation and fallback.
@@ -162,6 +179,8 @@ CRITICAL: Never output anything except the JSON object. No markdown, no code blo
             market_data: Current market data (price, volume, etc.)
             technical_indicators: Calculated indicators (RSI, EMA, ATR, etc.)
             memory: Recent trade history for feedback loop
+            has_position: Whether there's an open position for this symbol
+            action_space: List of allowed actions (e.g., ["BUY", "ABSTAIN"] or ["SELL", "HOLD"])
             
         Returns:
             AIDecision object
@@ -169,7 +188,7 @@ CRITICAL: Never output anything except the JSON object. No markdown, no code blo
         try:
             # Build context message
             user_message = self._build_analysis_prompt(
-                symbol, market_data, technical_indicators, memory
+                symbol, market_data, technical_indicators, memory, has_position, action_space
             )
             
             # Log full prompt for debugging (DEBUG level to avoid spam)
@@ -217,7 +236,7 @@ CRITICAL: Never output anything except the JSON object. No markdown, no code blo
             
             # Logical validation of decision
             validation_result = self._validate_decision(
-                decision, symbol, market_data, technical_indicators
+                decision, symbol, market_data, technical_indicators, has_position, action_space
             )
             
             # If validation failed and decision is BUY, try fallback
@@ -235,7 +254,7 @@ CRITICAL: Never output anything except the JSON object. No markdown, no code blo
                 
                 # Validate fallback decision
                 fallback_validation = self._validate_decision(
-                    fallback_decision, symbol, market_data, technical_indicators
+                    fallback_decision, symbol, market_data, technical_indicators, has_position, action_space
                 )
                 
                 if fallback_validation["is_valid"]:
@@ -436,12 +455,26 @@ CRITICAL: Never output anything except the JSON object. No markdown, no code blo
         symbol: str,
         market_data: Dict[str, Any],
         technical_indicators: Dict[str, float],
-        memory: Optional[List[Dict[str, Any]]]
+        memory: Optional[List[Dict[str, Any]]],
+        has_position: bool = False,
+        action_space: Optional[List[str]] = None
     ) -> str:
         """Build the analysis prompt with all context."""
         
+        # Determine action space if not provided
+        if action_space is None:
+            action_space = ["SELL", "HOLD"] if has_position else ["BUY", "ABSTAIN"]
+        
         prompt_parts = [
             f"Analyze {symbol} for trading decision.\n",
+            "\n" + "="*60,
+            "CURRENT POSITION STATUS:",
+            "="*60,
+            f"- Open Position: {'YES' if has_position else 'NO'}",
+            f"- Allowed Actions: {', '.join(action_space)}",
+            f"\n⚠️  CRITICAL: You can ONLY use actions from the allowed list above!",
+            f"   - If NO position: Use BUY or ABSTAIN (NEVER HOLD or SELL)",
+            f"   - If HAS position: Use SELL or HOLD (NEVER BUY or ABSTAIN)",
             "\n" + "="*60,
             "CURRENT MARKET DATA:",
             "="*60,
@@ -847,7 +880,9 @@ CRITICAL: Never output anything except the JSON object. No markdown, no code blo
         decision: AIDecision,
         symbol: str,
         market_data: Dict[str, Any],
-        technical_indicators: Dict[str, float]
+        technical_indicators: Dict[str, float],
+        has_position: bool = False,
+        action_space: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
         Validate decision logic against market conditions and indicators.
@@ -857,12 +892,40 @@ CRITICAL: Never output anything except the JSON object. No markdown, no code blo
             symbol: Trading symbol
             market_data: Current market data
             technical_indicators: Technical indicators
+            has_position: Whether there's an open position
+            action_space: List of allowed actions
             
         Returns:
             Dict with 'is_valid' (bool) and 'warnings' (list of strings)
         """
         warnings = []
         is_valid = True
+        
+        # Determine action space if not provided
+        if action_space is None:
+            action_space = ["SELL", "HOLD"] if has_position else ["BUY", "ABSTAIN"]
+        
+        # CRITICAL: Validate action is in allowed action space
+        if decision.action not in action_space:
+            warnings.append(
+                f"Action '{decision.action}' is NOT in allowed action space: {action_space}. "
+                f"Current position: {'YES' if has_position else 'NO'}"
+            )
+            is_valid = False
+            
+            # Auto-correct: convert invalid actions
+            if decision.action == "HOLD" and not has_position:
+                warnings.append("HOLD without position - should be ABSTAIN")
+                decision.action = "ABSTAIN"
+            elif decision.action == "ABSTAIN" and has_position:
+                warnings.append("ABSTAIN with position - should be HOLD")
+                decision.action = "HOLD"
+            elif decision.action == "BUY" and has_position:
+                warnings.append("BUY with existing position - should be SELL or HOLD")
+                decision.action = "HOLD"  # Safe default
+            elif decision.action == "SELL" and not has_position:
+                warnings.append("SELL without position - should be BUY or ABSTAIN")
+                decision.action = "ABSTAIN"  # Safe default
         
         rsi = technical_indicators.get("rsi", 50)
         ema_20 = technical_indicators.get("ema_20", 0)
@@ -928,9 +991,20 @@ CRITICAL: Never output anything except the JSON object. No markdown, no code blo
         
         # Validate HOLD decisions
         elif decision.action == "HOLD":
+            # HOLD is only valid when there's an open position
+            if not has_position:
+                warnings.append("HOLD action without open position - should be ABSTAIN")
+                is_valid = False
             # HOLD is usually safe, but check if conditions are too good to hold
-            if rsi > 70 and ema_20 > ema_50 and decision.confidence > 60:
+            elif rsi > 70 and ema_20 > ema_50 and decision.confidence > 60:
                 warnings.append("Strong bullish signals but HOLD - might miss opportunity")
+        
+        # Validate ABSTAIN decisions
+        elif decision.action == "ABSTAIN":
+            # ABSTAIN is only valid when there's NO open position
+            if has_position:
+                warnings.append("ABSTAIN action with open position - should be SELL or HOLD")
+                is_valid = False
         
         # General validations
         if decision.confidence > 95:
