@@ -28,6 +28,7 @@ This bot is currently in **Phase 0: Data Collection and Model Calibration**. The
 
 ## 🚀 Features
 
+### Core Trading Features
 - **Dynamic Screening**: Scans top-20 coins by volume every 24-48 hours
 - **7-Day Volatility Analysis**: Calculates ATR to assess profit potential
 - **AI Asset Selection**: Grok analyzes and selects 1-2 best coins for trading
@@ -38,6 +39,32 @@ This bot is currently in **Phase 0: Data Collection and Model Calibration**. The
 - **Asynchronous Architecture**: Fully async using ccxt.pro
 - **Modular Design**: Easy to add new exchanges or AI providers
 - **Daily File Rotation**: Trades stored in daily JSONL files for optimal AI learning
+
+### Dataset Engineering (Teacher-Student Learning)
+- **Typed ABSTAIN Decisions**: Three types of abstention for clear dataset structure
+  - `TECHNICAL_ABSTAIN`: Technical filters (low volume, negative edge, poor liquidity)
+  - `RISK_ABSTAIN`: Risk management (cooldown, trade limits, state conflicts)
+  - `AI_ABSTAIN`: AI decision (low confidence, conflicting signals)
+- **NO_AI_CALL Events**: Logs when AI is not called due to technical/risk filters
+  - Saves API costs
+  - Records mathematical rejections before AI evaluation
+- **Expected Edge & Total Costs**: Calculated for every decision cycle
+  - `expected_edge_percent`: Expected profit percentage
+  - `total_costs_percent`: Trading costs (fees + spread + slippage)
+  - Automatic TECHNICAL_ABSTAIN if edge <= costs
+- **Causal Confidence**: Confidence directly affects execution
+  - If confidence < threshold → automatic AI_ABSTAIN
+  - Confidence is not decorative, it's causal
+- **Action Space Logging**: Records available actions for each decision
+  - Shows what was allowed, not just what was chosen
+  - Critical for policy learning
+- **Separated Reasoning/Decision/Execution**: Clear separation for dataset quality
+  - `reasoning`: Why AI thought this way
+  - `decision`: What AI chose
+  - `execution_result`: What actually happened (EXECUTED, ABSTAINED, HELD, NONE)
+- **Exportable for API Flag**: Marks decisions suitable for commercial API
+  - Automatic filtering of risky/minimal-edge decisions
+  - Prepares data for future API product
 
 ## 📋 Requirements
 
@@ -260,7 +287,21 @@ Logs are saved to:
 - Console: real-time output
 - Files: `logs/sentinel_YYYY-MM-DD.log`
 - Trade history: `storage/trades/trades_YYYY-MM-DD.jsonl`
-- Analytics: `storage/analytics.json`
+- AI decisions: `storage/analytics/ai_decisions_YYYY-MM-DD.jsonl`
+- Market conditions: `storage/analytics/market_conditions_YYYY-MM-DD.jsonl`
+- SQLite database: Daily sync for advanced analytics
+
+### Data Format
+
+All decisions are logged in JSONL format with full context:
+- `decision_id`: Unique UUID for each decision
+- `abstain_type`: Type of ABSTAIN (TECHNICAL_ABSTAIN, RISK_ABSTAIN, AI_ABSTAIN)
+- `expected_edge_percent`: Expected profit percentage
+- `total_costs_percent`: Trading costs percentage
+- `action_space`: Available actions at decision time
+- `execution_result`: What actually happened
+- `exportable_for_api`: Whether decision is suitable for API export
+- `event_type`: Type of event (ai_decision, NO_AI_CALL)
 
 ## ⚠️ Important Notes
 
@@ -291,6 +332,37 @@ The bot is designed for easy expansion:
 - **[Architecture Guide](docs/ARCHITECTURE.md)**: System architecture and component overview
 - **[Troubleshooting Guide](docs/TROUBLESHOOTING.md)**: Common issues and solutions
 - **[Error Codes Reference](docs/ERROR_CODES.md)**: Complete error code reference
+- **[Grok Nightly Report](docs/grok_nightly_report.md)**: Analysis of Grok's decision-making behavior
+
+## 🎓 Dataset Engineering
+
+This bot is designed as a **research and development system** focused on collecting high-quality data for teacher-student model training.
+
+### Key Principles
+
+1. **Causality**: Every decision has clear cause-effect relationships
+2. **Observability**: All decisions are logged with full context
+3. **Quality over Quantity**: Better to abstain than to make bad trades
+4. **Dataset Purity**: Clean, structured data ready for model training
+
+### Data Structure
+
+Each decision includes:
+- Market context (price, volume, session, BTC trend)
+- Technical indicators (RSI, EMA, ATR, etc.)
+- AI reasoning and confidence
+- Expected edge and total costs
+- Action space (what was allowed)
+- Execution result (what happened)
+- Abstain type (if applicable)
+- Exportability flag (for API use)
+
+This structure enables:
+- Teacher-student learning
+- Policy model training
+- Causal analysis
+- Pattern recognition
+- Future API product development
 
 ## 🆘 Support
 
