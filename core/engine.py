@@ -408,10 +408,10 @@ class TradingEngine:
             Dictionary with constraints
         """
         return {
-            'max_trades_per_day': self.risk_manager.max_trades_per_day,
+            'max_trades_per_day': getattr(self.risk_manager, 'max_trades_per_day', 5),  # Default 5 if not set
             'max_risk_per_trade_pct': self.risk_manager.stop_loss_pct,
             'cooldown_active': False,  # Placeholder, implement if needed
-            'symbol_blacklisted': not self.risk_manager.is_symbol_allowed(symbol),
+            'symbol_blacklisted': not self.risk_manager.is_symbol_allowed(symbol) if hasattr(self.risk_manager, 'is_symbol_allowed') else False,
             'min_ai_confidence': 80.0,
             'current_balance': self.risk_manager.balance
         }
