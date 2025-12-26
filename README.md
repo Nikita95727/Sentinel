@@ -145,6 +145,32 @@ python main.py
 
 ## 🔧 Configuration
 
+### Module Enable/Disable
+
+Control which modules are active via `.env`:
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `ENABLE_CONSERVATIVE_MODULE` | Enable conservative trading module | `true` |
+| `ENABLE_LAUNCH_SNIPER_MODULE` | Enable launch sniper module (high-risk) | `false` |
+
+**Example:**
+```bash
+# Enable only conservative module
+ENABLE_CONSERVATIVE_MODULE=true
+ENABLE_LAUNCH_SNIPER_MODULE=false
+
+# Enable both modules
+ENABLE_CONSERVATIVE_MODULE=true
+ENABLE_LAUNCH_SNIPER_MODULE=true
+
+# Disable all (will exit with error - at least one must be enabled)
+ENABLE_CONSERVATIVE_MODULE=false
+ENABLE_LAUNCH_SNIPER_MODULE=false
+```
+
+### Trading Parameters
+
 Main parameters in `.env`:
 
 | Parameter | Description | Default |

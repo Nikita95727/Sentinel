@@ -1,0 +1,1272 @@
+"""Main trading engine orchestrating all components."""
+
+from typing import Optional, List, Dict, Any
+from datetime import datetime
+from loguru import logger
+
+from core.base_exchange import BaseExchange
+from core.base_ai import BaseAI, AIDecision
+# Import from services (will be moved to module later if needed)
+from services.analyzer import Analyzer
+from services.risk_manager import RiskManager
+from services.analytics import Analytics
+from services.ai_optimizer import AIOptimizer
+from services.sqlite_scheduler import SQLiteScheduler
+from storage.state_manager import StateManager
+from utils.error_handler import (
+    log_error_with_context, ErrorCode, ErrorCategory, ErrorSeverity
+)
+from core.order_state import Order, OrderState
+
+
+class TradingEngine:
+    """Main orchestration engine for the trading bot."""
+
+    def __init__(
+        self,
+        exchange: BaseExchange,
+        ai_provider: BaseAI,
+        analyzer: Analyzer,
+        risk_manager: RiskManager,
+        state_manager: StateManager,
+        analytics: Optional[Analytics] = None,
+        ai_optimizer: Optional[AIOptimizer] = None,
+        event_bus: Optional['EventBus'] = None,
+        symbols: Optional[List[str]] = None,
+        timeframe: str = "30m",
+        dry_run: bool = True
+    ):
+        """
+        Initialize trading engine.
+        
+        Args:
+            exchange: Exchange provider instance
+            ai_provider: AI provider instance
+            analyzer: Technical analyzer instance
+            risk_manager: Risk manager instance
+            state_manager: State manager instance
+            analytics: Analytics service instance
+            ai_optimizer: AI optimizer with caching (optional, will be created if None)
+            event_bus: Event bus for event-driven communication (optional, uses global if None)
+            symbols: List of trading pair symbols (default: ["BTC/USDT"])
+            timeframe: Candle timeframe
+            dry_run: If True, no real trades will be executed
+        """
+        self.exchange = exchange
+        self.ai_provider = ai_provider
+        self.analyzer = analyzer
+        self.risk_manager = risk_manager
+        self.state_manager = state_manager
+        self.analytics = analytics
+        self.active_symbols = symbols or ["BTC/USDT"]
+        self.timeframe = timeframe
+        self.dry_run = dry_run
+        
+        # Event bus (use provided or global instance)
+        from core.events import event_bus as global_event_bus
+        self.event_bus = event_bus if event_bus is not None else global_event_bus
+        
+        # Initialize AI optimizer if not provided
+        if ai_optimizer is None:
+            self.ai_optimizer = AIOptimizer(ai_provider, cache_ttl_minutes=30)
+        else:
+            self.ai_optimizer = ai_optimizer
+        
+        # Track positions per symbol
+        self.positions: Dict[str, Optional[dict]] = {}
+        for symbol in self.active_symbols:
+            self.positions[symbol] = None
+        
+        # Track active orders with State Machine
+        self.active_orders: Dict[str, Order] = {}  # order_id -> Order
+        
+        # Track active orders with State Machine
+        self.active_orders: Dict[str, Order] = {}  # order_id -> Order
+
+    def update_active_symbols(self, symbols: List[str]) -> None:
+        """
+        Update the list of active trading symbols.
+        
+        Args:
+            symbols: New list of symbols to trade
+        """
+        self.active_symbols = symbols
+        
+        # Initialize positions for new symbols
+        for symbol in symbols:
+            if symbol not in self.positions:
+                self.positions[symbol] = None
+        
+        logger.info(f"Active symbols updated: {', '.join(symbols)}")
+
+    async def run_cycle(self) -> None:
+        """
+        Execute one complete trading cycle for all active symbols.
+        
+        This is the main loop that runs every 30 minutes.
+        """
+        try:
+            logger.info(f"{'='*60}")
+            logger.info(f"Starting trading cycle for {len(self.active_symbols)} symbol(s)")
+            logger.info(f"Active symbols: {', '.join(self.active_symbols)}")
+            logger.info(f"Dry run mode: {self.dry_run}")
+            logger.info(f"{'='*60}")
+            
+            # Run cycle for each active symbol
+            for symbol in self.active_symbols:
+                await self._run_symbol_cycle(symbol)
+            
+            # Monitor active orders (check status, update state machine)
+            await self.monitor_orders()
+            
+        except Exception as e:
+            log_error_with_context(
+                e, ErrorCode.BUSINESS_LOGIC_ERROR,
+                ErrorCategory.BUSINESS_LOGIC_ERROR, ErrorSeverity.CRITICAL,
+                "TradingEngine", operation="run_cycle",
+                metadata={"symbols_count": len(self.active_symbols)}
+            )
+
+    async def _run_symbol_cycle(self, symbol: str) -> None:
+        """
+        Execute trading cycle for a single symbol.
+        
+        Args:
+            symbol: Trading pair symbol
+        """
+        try:
+            logger.info(f"\n--- Analyzing {symbol} ---")
+            
+            # Step 1: Fetch market data
+            ohlcv_data = await self.exchange.fetch_ohlcv(
+                symbol=symbol,
+                timeframe=self.timeframe,
+                limit=100
+            )
+            
+            if not ohlcv_data or len(ohlcv_data) < 50:
+                log_error_with_context(
+                    ValueError(f"Insufficient market data: got {len(ohlcv_data) if ohlcv_data else 0} candles, need 50"),
+                    ErrorCode.DATA_INSUFFICIENT,
+                    ErrorCategory.DATA_ERROR, ErrorSeverity.MEDIUM,
+                    "TradingEngine", symbol=symbol, operation="fetch_ohlcv",
+                    metadata={"candles_received": len(ohlcv_data) if ohlcv_data else 0, "required": 50}
+                )
+                return
+            
+            # Step 2: Calculate technical indicators
+            indicators = self.analyzer.calculate_indicators(ohlcv_data)
+            logger.info(
+                f"Indicators: RSI={indicators.get('rsi', 0):.2f}, "
+                f"EMA20={indicators.get('ema_20', 0):.2f}, "
+                f"EMA50={indicators.get('ema_50', 0):.2f}, "
+                f"ATR%={indicators.get('atr_pct', 0):.2f}"
+            )
+            
+            # Step 2.1: Technical filter - skip AI if signals don't pass
+            # Get ticker early for price calculation
+            ticker = await self.exchange.get_ticker(symbol)
+            current_price = ticker.get('last', indicators.get('current_price', 0))
+            
+            if not self._technical_filter_passed(indicators, symbol):
+                logger.info(f"{symbol}: Technical filter failed - skipping AI call (NO_AI_CALL)")
+                abstain_reason = self._get_technical_filter_failure_reason(indicators, symbol)
+                
+                # Calculate edge and costs for dataset quality
+                expected_edge = self._calculate_expected_edge(current_price, indicators, 0.0)  # 0 confidence for technical filter
+                total_costs = self._calculate_total_costs(current_price, indicators)
+                
+                # Check if negative edge after costs
+                if expected_edge <= total_costs:
+                    abstain_reason = f"{abstain_reason}, negative_edge_after_costs"
+                
+                # Log NO_AI_CALL event (not AI decision)
+                if self.analytics:
+                    await self.analytics.record_no_ai_call(
+                        symbol=symbol,
+                        reason=abstain_reason,
+                        market_data={
+                            'price': current_price,
+                            'volume': ticker.get('baseVolume', indicators.get('volume', 0))
+                        },
+                        technical_indicators=indicators,
+                        expected_edge=expected_edge,
+                        total_costs=total_costs,
+                        context={'filter_type': 'technical_pre_filter'}
+                    )
+                return
+            
+            # Step 3: Current price already obtained above (for technical filter)
+            
+            # Step 3.1: Get BTC trend for market context (if not BTC itself)
+            btc_trend = None
+            btc_rsi = None
+            if symbol != "BTC/USDT":
+                try:
+                    btc_ohlcv = await self.exchange.fetch_ohlcv("BTC/USDT", timeframe=self.timeframe, limit=50)
+                    if btc_ohlcv and len(btc_ohlcv) >= 50:
+                        btc_indicators = self.analyzer.calculate_indicators(btc_ohlcv)
+                        btc_trend = "bullish" if btc_indicators.get('ema_20', 0) > btc_indicators.get('ema_50', 0) else "bearish"
+                        btc_rsi = btc_indicators.get('rsi', 50)
+                except Exception as e:
+                    logger.debug(f"Could not fetch BTC trend: {e}")
+            
+            # Get market session and day of week
+            from datetime import datetime
+            utc_now = datetime.utcnow()
+            hour = utc_now.hour
+            day_of_week = utc_now.strftime('%A')
+            
+            # Determine market session
+            if 0 <= hour < 8:
+                market_session = "Asia"
+            elif 8 <= hour < 16:
+                market_session = "Europe"
+            else:
+                market_session = "US"
+            
+            market_data = {
+                'price': current_price,
+                'volume': ticker.get('baseVolume', indicators.get('volume', 0)),
+                'change_pct': ticker.get('percentage', 0),
+                'market_session': market_session,
+                'day_of_week': day_of_week,
+                'hour_utc': hour,
+                'btc_trend': btc_trend,
+                'btc_rsi': btc_rsi if 'btc_rsi' in locals() else None
+            }
+            
+            # Step 4: Get trading memory (last 5 trades for better learning)
+            memory = await self.state_manager.get_recent_trades(limit=5)
+            
+            # Step 5: Get AI decision with optimizer (caching + rate limiting)
+            logger.debug(f"Requesting AI decision for {symbol}...")
+            logger.debug(f"Memory context: {len(memory)} recent trades")
+            
+            # Check if we have an open position
+            current_position = self.positions.get(symbol)
+            has_position = current_position is not None
+            
+            # Calculate action_space before AI call
+            action_space = self._get_action_space(symbol, current_position)
+            
+            # Use AI optimizer for smart caching
+            decision = await self.ai_optimizer.get_analysis(
+                symbol=symbol,
+                market_data=market_data,
+                technical_indicators=indicators,
+                has_position=has_position,
+                memory=memory,
+                force=False,
+                action_space=action_space
+            )
+            
+            # If None returned (rate limited or cached), skip this cycle
+            if decision is None:
+                logger.debug(f"{symbol}: AI call skipped (rate limited or cached)")
+                return
+            
+            # Log decision with full context
+            logger.info(
+                f"AI Decision: {decision.action} "
+                f"(Confidence: {decision.confidence}%) - {decision.reasoning}"
+            )
+            
+            # Log validation result if available
+            validation = decision.additional_context.get('validation', {}) if decision.additional_context else {}
+            if validation:
+                is_valid = validation.get('is_valid', True)
+                warnings = validation.get('warnings', [])
+                logger.debug(f"Decision validation: {'VALID' if is_valid else 'INVALID'}")
+                if warnings:
+                    logger.debug(f"Validation warnings: {len(warnings)}")
+                    for warning in warnings:
+                        logger.debug(f"  ⚠️  {warning}")
+            
+            # Detect anomalies in AI decision (Task 6)
+            if self.analytics:
+                anomaly_data = self.analytics.detect_anomalies(
+                    decision=decision.to_dict(),
+                    market_data=market_data,
+                    technical_indicators=indicators
+                )
+                
+                if anomaly_data.get('has_anomalies'):
+                    await self.analytics.record_anomaly(
+                        symbol=symbol,
+                        decision=decision.to_dict(),
+                        market_data=market_data,
+                        technical_indicators=indicators,
+                        anomaly_data=anomaly_data
+                    )
+            
+            # Record AI decision for analytics and get decision_id
+            decision_id = decision.decision_id
+            
+            # Calculate constraints for this decision (action_space already calculated above)
+            constraints = self._get_constraints(symbol, current_price, indicators, market_data)
+            
+            # Calculate expected edge and total costs for dataset quality
+            expected_edge = self._calculate_expected_edge(current_price, indicators, decision.confidence)
+            total_costs = self._calculate_total_costs(current_price, indicators)
+            
+            # Check for negative edge after costs (TECHNICAL_ABSTAIN)
+            if expected_edge <= total_costs and decision.action == "BUY":
+                logger.info(f"{symbol}: Negative edge after costs ({expected_edge:.2f}% <= {total_costs:.2f}%) - converting to TECHNICAL_ABSTAIN")
+                decision.action = "ABSTAIN"
+                decision.abstain_type = "TECHNICAL_ABSTAIN"
+                decision.confidence = 0.0
+                decision.reasoning = f"Negative edge after costs: expected {expected_edge:.2f}% <= costs {total_costs:.2f}%. Original: {decision.reasoning}"
+                decision.exportable_for_api = False
+            
+            # Check confidence threshold (AI_ABSTAIN if confidence < threshold)
+            min_confidence = 80.0
+            if decision.confidence < min_confidence and decision.action == "BUY":
+                logger.info(f"{symbol}: Confidence {decision.confidence}% < {min_confidence}% - converting to AI_ABSTAIN")
+                decision.action = "ABSTAIN"
+                decision.abstain_type = "AI_ABSTAIN"
+                decision.reasoning = f"Low confidence ({decision.confidence}% < {min_confidence}%). Original: {decision.reasoning}"
+                decision.exportable_for_api = False
+            
+            # Set abstain_type for existing ABSTAIN decisions
+            if decision.action == "ABSTAIN" and not decision.abstain_type:
+                decision.abstain_type = "AI_ABSTAIN"  # Default if AI returned ABSTAIN
+            
+            # Determine exportable_for_api (if not already set)
+            if decision.exportable_for_api is True:  # Only if still True (not set to False above)
+                # Set to False if edge is minimal or decision is risky
+                if expected_edge < 0.5 or decision.risk_level == "high":
+                    decision.exportable_for_api = False
+            
+            # Add constraints, action_space, edge, and costs to decision context
+            if decision.additional_context is None:
+                decision.additional_context = {}
+            decision.additional_context['constraints'] = constraints
+            decision.additional_context['action_space'] = action_space
+            decision.additional_context['expected_edge_percent'] = expected_edge
+            decision.additional_context['total_costs_percent'] = total_costs
+            
+            if self.analytics:
+                await self.analytics.record_ai_decision(
+                    symbol=symbol,
+                    decision=decision.to_dict(),
+                    market_data=market_data,
+                    technical_indicators=indicators,
+                    context={
+                        'memory': memory, 
+                        'decision_id': decision_id,
+                        'constraints': constraints,
+                        'action_space': action_space,
+                        'expected_edge_percent': expected_edge,
+                        'total_costs_percent': total_costs
+                    }
+                )
+                
+                # Record market condition
+                await self.analytics.record_market_condition(
+                    symbol=symbol,
+                    indicators=indicators,
+                    price=current_price,
+                    volume=market_data.get('volume', 0)
+                )
+            
+            # Step 6: Execute trading logic based on decision
+            # Separate: reasoning (why), decision (what), execution_result (what happened)
+            execution_result = "NONE"
+            
+            # Log execution decision logic
+            logger.debug(f"Execution check for {symbol}:")
+            logger.debug(f"  Reasoning: {decision.reasoning[:100]}...")
+            logger.debug(f"  Decision: {decision.action} (abstain_type: {decision.abstain_type})")
+            logger.debug(f"  Current position: {'Yes' if current_position else 'No'}")
+            logger.debug(f"  Confidence: {decision.confidence}% (min required: 80%)")
+            logger.debug(f"  Expected edge: {expected_edge:.2f}%, Total costs: {total_costs:.2f}%")
+            
+            if decision.action == "BUY" and decision.should_execute() and not current_position:
+                logger.info(f"{symbol}: Executing BUY - confidence {decision.confidence}% >= 80%, no open position")
+                execution_result = "EXECUTED"
+                await self._execute_buy(
+                    symbol, 
+                    current_price, 
+                    decision, 
+                    decision_id,
+                    indicators=indicators,
+                    market_data=market_data
+                )
+            elif decision.action == "ABSTAIN":
+                # Explicit ABSTAIN decision (already set abstain_type above)
+                abstain_type = decision.abstain_type or "AI_ABSTAIN"
+                logger.info(f"{symbol}: ABSTAIN decision ({abstain_type}) - no trade executed")
+                execution_result = "ABSTAINED"
+                
+                if self.analytics:
+                    await self.analytics.update_decision_result(
+                        decision_id=decision_id,
+                        executed=False,
+                        trade_result={
+                            'reasoning': decision.reasoning,
+                            'decision': decision.action,
+                            'abstain_type': abstain_type,
+                            'execution_result': execution_result,
+                            'expected_edge_percent': expected_edge,
+                            'total_costs_percent': total_costs
+                        }
+                    )
+            elif decision.action == "HOLD":
+                if current_position:
+                    # HOLD with position is valid
+                    logger.info(f"{symbol}: HOLD decision - keeping position open")
+                    execution_result = "HELD"
+                    if self.analytics:
+                        await self.analytics.update_decision_result(
+                            decision_id=decision_id,
+                            executed=False,
+                            trade_result={
+                                'reasoning': decision.reasoning,
+                                'decision': decision.action,
+                                'execution_result': execution_result
+                            }
+                        )
+                else:
+                    # HOLD without position - convert to ABSTAIN
+                    logger.warning(f"{symbol}: HOLD decision without position - converting to RISK_ABSTAIN")
+                    decision.action = "ABSTAIN"
+                    decision.abstain_type = "RISK_ABSTAIN"
+                    decision.reasoning = f"Invalid HOLD without position. Original: {decision.reasoning}"
+                    execution_result = "ABSTAINED"
+                    if self.analytics:
+                        await self.analytics.update_decision_result(
+                            decision_id=decision_id,
+                            executed=False,
+                            trade_result={
+                                'reasoning': decision.reasoning,
+                                'decision': decision.action,
+                                'abstain_type': 'RISK_ABSTAIN',
+                                'execution_result': execution_result
+                            }
+                        )
+            elif current_position:
+                logger.debug(f"{symbol}: Checking exit conditions for open position")
+                execution_result = "POSITION_CHECKED"
+                await self._check_exit_conditions(symbol, current_price)
+            else:
+                # Unknown case - log as ABSTAIN
+                logger.info(f"{symbol}: No action taken - unknown state")
+                execution_result = "ABSTAINED"
+                if self.analytics:
+                    await self.analytics.update_decision_result(
+                        decision_id=decision_id,
+                        executed=False,
+                        trade_result={
+                            'reasoning': decision.reasoning if hasattr(decision, 'reasoning') else 'Unknown state',
+                            'decision': 'ABSTAIN',
+                            'abstain_type': 'RISK_ABSTAIN',
+                            'execution_result': execution_result,
+                            'reason': 'unknown state'
+                        }
+                    )
+            
+            # Update decision with execution_result in context
+            if decision.additional_context is None:
+                decision.additional_context = {}
+            decision.additional_context['execution_result'] = execution_result
+            
+        except Exception as e:
+            log_error_with_context(
+                e, ErrorCode.BUSINESS_LOGIC_ERROR,
+                ErrorCategory.BUSINESS_LOGIC_ERROR, ErrorSeverity.HIGH,
+                "TradingEngine", symbol=symbol, operation="run_symbol_cycle",
+                metadata={
+                    "timeframe": self.timeframe,
+                    "has_position": self.positions.get(symbol) is not None
+                }
+            )
+    
+    def _calculate_expected_edge(
+        self,
+        current_price: float,
+        indicators: Dict[str, float],
+        confidence: float
+    ) -> float:
+        """
+        Calculate expected edge percentage for a potential trade.
+        
+        Args:
+            current_price: Current market price
+            indicators: Technical indicators
+            confidence: AI confidence (0-100)
+            
+        Returns:
+            Expected edge percentage
+        """
+        # Base edge from confidence (higher confidence = higher expected edge)
+        confidence_factor = confidence / 100.0
+        
+        # RSI-based edge (optimal zone 50-65 gives positive edge)
+        rsi = indicators.get('rsi', 50)
+        rsi_edge = 0.0
+        if 50 <= rsi <= 65:
+            rsi_edge = 0.5  # Optimal zone
+        elif 40 <= rsi < 50:
+            rsi_edge = 0.2  # Slightly oversold
+        elif rsi < 40:
+            rsi_edge = -0.3  # Oversold (risky)
+        elif rsi > 65:
+            rsi_edge = -0.5  # Overbought (negative edge)
+        
+        # EMA trend strength
+        ema_20 = indicators.get('ema_20', 0)
+        ema_50 = indicators.get('ema_50', 0)
+        trend_strength = indicators.get('trend_strength', 0)
+        trend_edge = trend_strength * 0.1 if ema_20 > ema_50 else -0.2
+        
+        # Volume confirmation
+        volume_ratio = indicators.get('volume_ratio', 1.0)
+        volume_edge = (volume_ratio - 1.0) * 0.3 if volume_ratio > 1.0 else -0.2
+        
+        # Combine factors
+        expected_edge = (confidence_factor * 1.0) + rsi_edge + trend_edge + volume_edge
+        
+        return max(-2.0, min(5.0, expected_edge))  # Clamp between -2% and 5%
+    
+    def _calculate_total_costs(
+        self,
+        current_price: float,
+        indicators: Dict[str, float],
+        position_size: Optional[float] = None
+    ) -> float:
+        """
+        Calculate total costs percentage (fees + spread + slippage estimate).
+        
+        Args:
+            current_price: Current market price
+            indicators: Technical indicators
+            position_size: Position size in base currency (optional)
+            
+        Returns:
+            Total costs as percentage
+        """
+        # Trading fees (maker + taker average)
+        trading_fees_pct = 0.1  # 0.1% (0.05% maker + 0.05% taker average)
+        
+        # Spread estimate (bid-ask spread)
+        spread_pct = 0.05  # 0.05% typical spread for major pairs
+        
+        # Slippage estimate based on volume and volatility
+        volume_ratio = indicators.get('volume_ratio', 1.0)
+        atr_pct = indicators.get('atr_pct', 0)
+        
+        # Low volume = higher slippage
+        if volume_ratio < 0.5:
+            slippage_pct = 0.15  # High slippage
+        elif volume_ratio < 1.0:
+            slippage_pct = 0.10  # Medium slippage
+        else:
+            slippage_pct = 0.05  # Low slippage
+        
+        # High volatility = higher slippage
+        if atr_pct > 5.0:
+            slippage_pct += 0.05
+        
+        total_costs = trading_fees_pct + spread_pct + slippage_pct
+        
+        return total_costs
+    
+    def _get_constraints(
+        self,
+        symbol: str,
+        current_price: float,
+        indicators: Dict[str, float],
+        market_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Calculate constraints for AI decision logging.
+        
+        Args:
+            symbol: Trading symbol
+            current_price: Current price
+            indicators: Technical indicators
+            market_data: Market data
+            
+        Returns:
+            Dictionary with constraints
+        """
+        return {
+            'max_trades_per_day': getattr(self.risk_manager, 'max_trades_per_day', 5),  # Default 5 if not set
+            'max_risk_per_trade_pct': self.risk_manager.stop_loss_pct,
+            'cooldown_active': False,  # Placeholder, implement if needed
+            'symbol_blacklisted': not self.risk_manager.is_symbol_allowed(symbol) if hasattr(self.risk_manager, 'is_symbol_allowed') else False,
+            'min_ai_confidence': 80.0,
+            'current_balance': self.risk_manager.balance
+        }
+    
+    def _get_action_space(self, symbol: str, current_position: Optional[dict]) -> List[str]:
+        """
+        Get available action space for current state.
+        
+        Args:
+            symbol: Trading symbol
+            current_position: Current position if exists
+            
+        Returns:
+            List of available actions
+        """
+        if current_position:
+            return ["SELL", "HOLD"]
+        else:
+            return ["BUY", "ABSTAIN"]
+    
+    def _get_technical_filter_failure_reason(self, indicators: Dict[str, float], symbol: str) -> str:
+        """
+        Get reason why technical filter failed.
+        
+        Args:
+            indicators: Technical indicators
+            symbol: Trading symbol
+            
+        Returns:
+            Reason string for ABSTAIN decision
+        """
+        reasons = []
+        
+        # Check volume
+        volume = indicators.get('volume', 0)
+        volume_avg = indicators.get('volume_avg', 0)
+        if volume_avg > 0 and volume < volume_avg * 0.5:
+            reasons.append("low liquidity")
+        
+        # Check volatility
+        atr_pct = indicators.get('atr_pct', 0)
+        if atr_pct < 1.0:
+            reasons.append("low volatility")
+        elif atr_pct > 10.0:
+            reasons.append("excessive volatility")
+        
+        # Check RSI extremes
+        rsi = indicators.get('rsi', 50)
+        if rsi > 80:
+            reasons.append("overbought conditions")
+        elif rsi < 20:
+            reasons.append("oversold conditions")
+        
+        # Check conflicting indicators
+        ema_20 = indicators.get('ema_20', 0)
+        ema_50 = indicators.get('ema_50', 0)
+        price = indicators.get('current_price', 0)
+        if price > 0:
+            if (price > ema_20 > ema_50) and rsi < 50:
+                reasons.append("conflicting indicators")
+            elif (price < ema_20 < ema_50) and rsi > 50:
+                reasons.append("conflicting indicators")
+        
+        return ", ".join(reasons) if reasons else "technical filter criteria not met"
+    
+    def _technical_filter_passed(
+        self, 
+        indicators: Dict[str, float],
+        symbol: str
+    ) -> bool:
+        """
+        Quick technical filter to skip AI calls for unpromising signals.
+        
+        Only passes signals that show clear potential, saving API costs.
+        
+        Args:
+            indicators: Technical indicators dictionary
+            symbol: Trading pair symbol
+            
+        Returns:
+            True if technical signals pass filter
+        """
+        rsi = indicators.get('rsi', 50)
+        ema_20 = indicators.get('ema_20', 0)
+        ema_50 = indicators.get('ema_50', 0)
+        volume_spike = indicators.get('volume_change_pct', 0) > 20  # 20% volume increase
+        atr_pct = indicators.get('atr_pct', 0)
+        
+        # Determine EMA trend
+        ema_trend = 'up' if ema_20 > ema_50 else 'down' if ema_20 < ema_50 else 'neutral'
+        
+        # Check if we have an open position
+        has_position = self.positions.get(symbol) is not None
+        
+        if has_position:
+            # For open positions: look for exit signals
+            sell_signal = (
+                rsi > 70 or  # Overbought
+                ema_trend == 'down'  # Downtrend
+            )
+            if sell_signal:
+                logger.debug(
+                    f"{symbol}: Technical filter PASSED (exit signal: "
+                    f"RSI={rsi:.1f}, EMA_trend={ema_trend})"
+                )
+                return True
+        else:
+            # For new positions: look for entry signals
+            buy_signal = (
+                rsi < 40 and  # Oversold
+                ema_trend == 'up' and  # Uptrend
+                (volume_spike or atr_pct < 10)  # Volume spike or moderate volatility
+            )
+            if buy_signal:
+                logger.debug(
+                    f"{symbol}: Technical filter PASSED (entry signal: "
+                    f"RSI={rsi:.1f}, EMA_trend={ema_trend}, "
+                    f"volume_spike={volume_spike}, ATR%={atr_pct:.2f})"
+                )
+                return True
+        
+        # If no clear signal, still allow if RSI is in neutral zone
+        # (to avoid missing opportunities)
+        if 35 <= rsi <= 65:
+            logger.debug(
+                f"{symbol}: Technical filter PASSED (neutral zone: RSI={rsi:.1f})"
+            )
+            return True
+        
+        logger.debug(
+            f"{symbol}: Technical filter FAILED (RSI={rsi:.1f}, "
+            f"EMA_trend={ema_trend}, volume_spike={volume_spike})"
+        )
+        return False
+
+    async def _execute_buy(
+        self, 
+        symbol: str, 
+        current_price: float, 
+        decision, 
+        decision_id: str,
+        indicators: Optional[Dict[str, Any]] = None,
+        market_data: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """
+        Execute a buy order.
+        
+        Args:
+            symbol: Trading pair symbol
+            current_price: Current market price
+            decision: AI decision object
+            decision_id: Unique decision ID (UUID)
+            indicators: Technical indicators at entry
+            market_data: Market data at entry
+        """
+        try:
+            # Check if symbol is allowed
+            if not self.risk_manager.is_symbol_allowed(symbol):
+                logger.warning(f"Symbol {symbol} is blacklisted, skipping buy")
+                return
+            
+            # Get trade parameters with dynamic calculations
+            volatility = indicators.get('atr_pct') if indicators else None
+            confidence = decision.confidence if decision else None
+            
+            trade_params = self.risk_manager.get_trade_params(
+                entry_price=current_price,
+                volatility=volatility,
+                confidence=confidence,
+                side='buy'
+            )
+            
+            # Validate trade
+            logger.debug(f"Validating trade for {symbol}...")
+            logger.debug(f"  Entry price: ${current_price:.2f}")
+            logger.debug(f"  Position size: {trade_params['position_size']:.6f}")
+            logger.debug(f"  Stop-loss: ${trade_params['stop_loss']:.2f} ({trade_params.get('stop_loss_pct', 0):.2f}%)")
+            logger.debug(f"  Take-profit: ${trade_params['take_profit']:.2f} ({trade_params.get('take_profit_pct', 0):.2f}%)")
+            
+            validation = self.risk_manager.validate_trade(
+                symbol,
+                current_price,
+                trade_params['position_size']
+            )
+            
+            logger.debug(f"Risk validation result: {'VALID' if validation['is_valid'] else 'INVALID'}")
+            if validation.get('reasons'):
+                for reason in validation['reasons']:
+                    logger.debug(f"  Validation reason: {reason}")
+            
+            if not validation['is_valid']:
+                logger.warning(f"Trade validation failed for {symbol}: {validation['reasons']}")
+                # Log ABSTAIN decision for failed validation
+                abstain_reason = ", ".join(validation.get('reasons', []))
+                abstain_decision = AIDecision(
+                    action="ABSTAIN",
+                    confidence=decision.confidence,
+                    reasoning=f"Risk validation failed: {abstain_reason}",
+                    risk_level="high",
+                    additional_context={
+                        'abstain_reason': abstain_reason,
+                        'validation_failed': True,
+                        'filter_type': 'risk_validation'
+                    },
+                    decision_id=decision_id  # Link to original decision
+                )
+                if self.analytics:
+                    await self.analytics.record_ai_decision(
+                        symbol=symbol,
+                        decision=abstain_decision.to_dict(),
+                        market_data=market_data or {},
+                        technical_indicators=indicators or {},
+                        context={'abstain': True, 'decision_id': decision_id}
+                    )
+                    await self.analytics.update_decision_result(
+                        decision_id=decision_id,
+                        executed=False,
+                        trade_result={'reason': abstain_reason, 'action': 'ABSTAIN'}
+                    )
+                return
+            
+            logger.info(f"Executing BUY order for {symbol}")
+            logger.info(f"Entry: ${trade_params['entry_price']:.2f}")
+            logger.info(f"Stop-Loss: ${trade_params['stop_loss']:.2f}")
+            logger.info(f"Take-Profit: ${trade_params['take_profit']:.2f}")
+            logger.info(f"Position size: {trade_params['position_size']:.6f}")
+            
+            # Create Order object with State Machine
+            order = Order(
+                id=None,  # Will be assigned by exchange
+                symbol=symbol,
+                side='buy',
+                amount=trade_params['position_size'],
+                price=None,  # Market order
+                state=OrderState.PENDING,
+                metadata={
+                    'entry_price': current_price,
+                    'stop_loss': trade_params['stop_loss'],
+                    'take_profit': trade_params['take_profit'],
+                    'entry_reason': decision.reasoning,
+                    'ai_confidence': decision.confidence
+                }
+            )
+            
+            if not self.dry_run:
+                try:
+                    # Submit order to exchange
+                    exchange_order = await self.exchange.create_market_order(
+                        symbol=symbol,
+                    side='buy',
+                    amount=trade_params['position_size']
+                )
+                
+                    # Update order with exchange response
+                    order.exchange_id = exchange_order.get('id')
+                    order.id = exchange_order.get('id')
+                    order.transition_to(OrderState.SUBMITTED)
+                    
+                    # Store for monitoring
+                    if order.exchange_id:
+                        self.active_orders[order.exchange_id] = order
+                    
+                    logger.info(f"Order submitted: {order.exchange_id} (state: {order.state.value})")
+                except Exception as e:
+                    # Order rejected
+                    order.transition_to(OrderState.REJECTED, error=str(e))
+                    log_error_with_context(
+                        e, ErrorCode.EXCHANGE_ORDER_REJECTED,
+                        ErrorCategory.EXCHANGE_ERROR, ErrorSeverity.HIGH,
+                        "TradingEngine", symbol=symbol, operation="create_market_order",
+                        metadata={"order_id": order.id, "amount": trade_params['position_size']}
+                    )
+                    raise
+            else:
+                # Dry run: simulate order
+                order.id = f"dry_run_{datetime.now().timestamp()}"
+                order.transition_to(OrderState.SUBMITTED)
+                logger.info(f"[DRY RUN] Order simulated: {order.id} (state: {order.state.value})")
+                
+                # Emit order event (dry run)
+                await self.event_bus.emit(OrderEvent(
+                    order_id=order.id,
+                    symbol=symbol,
+                    side='buy',
+                    state=order.state.value,
+                    amount=order.amount,
+                    filled_amount=order.filled_amount,
+                    source="TradingEngine",
+                    metadata={'dry_run': True}
+                ))
+            
+            # Save position with MFE/MAE tracking
+            self.positions[symbol] = {
+                'symbol': symbol,
+                'entry_price': current_price,
+                'position_size': trade_params['position_size'],
+                'stop_loss': trade_params['stop_loss'],
+                'take_profit': trade_params['take_profit'],
+                'entry_reason': decision.reasoning,
+                # MFE/MAE tracking
+                'mfe_price': current_price,  # Max Favorable Excursion (best price reached)
+                'mae_price': current_price,  # Max Adverse Excursion (worst price reached)
+                'mfe_percent': 0.0,  # Will be calculated at exit
+                'mae_percent': 0.0   # Will be calculated at exit
+            }
+            
+            # Add to history with full context for Grok learning
+            # Use indicators and market_data from parameters if provided, otherwise use defaults
+            entry_indicators = indicators if indicators is not None else {}
+            entry_market_data = market_data if market_data is not None else {}
+            
+            # Extract AI metadata from decision
+            ai_metadata = decision.additional_context.get('ai_metadata') if decision.additional_context else None
+            
+            await self.state_manager.add_trade(
+                symbol=symbol,
+                entry_price=current_price,
+                exit_price=None,
+                position_size=trade_params['position_size'],
+                side='buy',
+                entry_reason=decision.reasoning,
+                status='open',
+                entry_indicators=entry_indicators,
+                entry_market_data=entry_market_data,
+                ai_confidence=decision.confidence,
+                stop_loss=trade_params['stop_loss'],
+                take_profit=trade_params['take_profit'],
+                ai_metadata=ai_metadata,
+                decision_id=decision_id
+            )
+            
+            # Update analytics that decision was executed
+            if self.analytics:
+                await self.analytics.update_decision_result(
+                    decision_id=decision_id,
+                    executed=True
+                )
+            
+            logger.success(f"Position opened: {symbol} @ ${current_price:.2f}")
+            
+        except Exception as e:
+            log_error_with_context(
+                e, ErrorCode.BUSINESS_LOGIC_ERROR,
+                ErrorCategory.BUSINESS_LOGIC_ERROR, ErrorSeverity.CRITICAL,
+                "TradingEngine", symbol=symbol, operation="execute_buy",
+                metadata={
+                    "entry_price": current_price,
+                    "dry_run": self.dry_run,
+                    "decision_confidence": decision.confidence if decision else None
+                }
+            )
+
+    async def _check_exit_conditions(self, symbol: str, current_price: float) -> None:
+        """
+        Check if exit conditions are met for current position.
+        
+        Args:
+            symbol: Trading pair symbol
+            current_price: Current market price
+        """
+        position = self.positions.get(symbol)
+        if not position:
+            return
+        
+        try:
+            entry_price = position['entry_price']
+            stop_loss = position['stop_loss']
+            take_profit = position['take_profit']
+            
+            exit_reason = None
+            
+            # Check stop-loss
+            if current_price <= stop_loss:
+                exit_reason = f"Stop-loss hit (${stop_loss:.2f})"
+                logger.warning(exit_reason)
+            
+            # Check take-profit
+            elif current_price >= take_profit:
+                exit_reason = f"Take-profit hit (${take_profit:.2f})"
+                logger.success(exit_reason)
+            
+            # Execute exit if conditions met
+            if exit_reason:
+                await self._execute_sell(symbol, current_price, exit_reason)
+            else:
+                # Log current position status
+                pnl_pct = ((current_price - entry_price) / entry_price) * 100
+                logger.info(
+                    f"{symbol} position: ${current_price:.2f} "
+                    f"(P&L: {pnl_pct:+.2f}%, SL: ${stop_loss:.2f}, TP: ${take_profit:.2f})"
+                )
+                
+        except Exception as e:
+            log_error_with_context(
+                e, ErrorCode.BUSINESS_LOGIC_ERROR,
+                ErrorCategory.BUSINESS_LOGIC_ERROR, ErrorSeverity.HIGH,
+                "TradingEngine", symbol=symbol, operation="check_exit_conditions",
+                metadata={"current_price": current_price}
+            )
+
+    async def _execute_sell(self, symbol: str, current_price: float, exit_reason: str) -> None:
+        """
+        Execute a sell order to close position.
+        
+        Args:
+            symbol: Trading pair symbol
+            current_price: Current market price
+            exit_reason: Reason for exit
+        """
+        position = self.positions.get(symbol)
+        if not position:
+            return
+        
+        try:
+            position_size = position['position_size']
+            entry_price = position['entry_price']
+            
+            # Get final MFE/MAE values
+            mfe_price = position.get('mfe_price', entry_price)
+            mae_price = position.get('mae_price', entry_price)
+            
+            # Calculate final MFE/MAE percentages
+            mfe_percent = ((mfe_price - entry_price) / entry_price) * 100 if entry_price > 0 else 0.0
+            mae_percent = ((mae_price - entry_price) / entry_price) * 100 if entry_price > 0 else 0.0
+            
+            # Calculate P&L
+            pnl_pct = ((current_price - entry_price) / entry_price) * 100
+            pnl_usdt = (current_price - entry_price) * position_size
+            
+            logger.info(f"Executing SELL order for {symbol}")
+            logger.info(f"Exit: ${current_price:.2f}")
+            logger.info(f"P&L: {pnl_pct:+.2f}% (${pnl_usdt:+.2f})")
+            
+            # Create Order object with State Machine
+            sell_order = Order(
+                id=None,  # Will be assigned by exchange
+                symbol=symbol,
+                side='sell',
+                amount=position_size,
+                price=None,  # Market order
+                state=OrderState.PENDING,
+                metadata={
+                    'exit_price': current_price,
+                    'exit_reason': exit_reason,
+                    'entry_price': entry_price,
+                    'pnl_pct': pnl_pct,
+                    'pnl_usdt': pnl_usdt
+                }
+            )
+            
+            if not self.dry_run:
+                try:
+                    # Submit order to exchange
+                    exchange_order = await self.exchange.create_market_order(
+                        symbol=symbol,
+                    side='sell',
+                    amount=position_size
+                )
+                
+                    # Update order with exchange response
+                    sell_order.exchange_id = exchange_order.get('id')
+                    sell_order.id = exchange_order.get('id')
+                    sell_order.transition_to(OrderState.SUBMITTED)
+                    
+                    # Store for monitoring
+                    if sell_order.exchange_id:
+                        self.active_orders[sell_order.exchange_id] = sell_order
+                    
+                    logger.info(f"Order submitted: {sell_order.exchange_id} (state: {sell_order.state.value})")
+                except Exception as e:
+                    # Order rejected
+                    sell_order.transition_to(OrderState.REJECTED, error=str(e))
+                    log_error_with_context(
+                        e, ErrorCode.EXCHANGE_ORDER_REJECTED,
+                        ErrorCategory.EXCHANGE_ERROR, ErrorSeverity.HIGH,
+                        "TradingEngine", symbol=symbol, operation="create_market_order",
+                        metadata={"order_id": sell_order.id, "amount": position_size, "side": "sell"}
+                    )
+                    raise
+            else:
+                # Dry run: simulate order
+                sell_order.id = f"dry_run_{datetime.now().timestamp()}"
+                sell_order.transition_to(OrderState.SUBMITTED)
+                logger.info(f"[DRY RUN] Order simulated: {sell_order.id} (state: {sell_order.state.value})")
+            
+            # Update trade in history
+            # Find the last open trade for this symbol
+            history = await self.state_manager.load_history()
+            trades = history.get('trades', [])
+            
+            # Find the most recent open trade for this symbol
+            open_trade = None
+            for trade in reversed(trades):
+                if (trade.get('symbol') == symbol and 
+                    trade.get('status') == 'open'):
+                    open_trade = trade
+                    break
+            
+            if open_trade:
+                # Get current indicators for exit context
+                ohlcv_data = await self.exchange.fetch_ohlcv(
+                    symbol=symbol,
+                    timeframe=self.timeframe,
+                    limit=100
+                )
+                exit_indicators = self.analyzer.calculate_indicators(ohlcv_data) if ohlcv_data else {}
+                ticker = await self.exchange.get_ticker(symbol)
+                exit_market_data = {
+                    'price': current_price,
+                    'volume': ticker.get('baseVolume', 0),
+                    'change_pct': ticker.get('percentage', 0)
+                }
+                
+                await self.state_manager.update_trade_exit(
+                    trade_id=open_trade['trade_id'],
+                    exit_price=current_price,
+                    exit_reason=exit_reason,
+                    pnl=pnl_usdt,
+                    exit_indicators=exit_indicators,
+                    exit_market_data=exit_market_data
+                )
+                
+                # Update analytics with trade result
+                if self.analytics:
+                        # Find the decision that led to this trade
+                        data = await self.analytics._load_data()
+                        for ai_decision in reversed(data.get('ai_decisions', [])):
+                            if (ai_decision.get('symbol') == symbol and 
+                                ai_decision.get('executed') and 
+                                not ai_decision.get('trade_result')):
+                                ai_decision['trade_result'] = {
+                                    'pnl': pnl_usdt,
+                                    'pnl_pct': pnl_pct,
+                                    'exit_reason': exit_reason,
+                                    'exit_price': current_price
+                                }
+                                await self.analytics._save_data(data)
+                                break
+            
+            # Clear position
+            self.positions[symbol] = None
+            
+            result = "PROFIT" if pnl_usdt > 0 else "LOSS"
+            logger.success(f"Position closed: {result} of ${pnl_usdt:+.2f}")
+            
+        except Exception as e:
+            log_error_with_context(
+                e, ErrorCode.BUSINESS_LOGIC_ERROR,
+                ErrorCategory.BUSINESS_LOGIC_ERROR, ErrorSeverity.CRITICAL,
+                "TradingEngine", symbol=symbol, operation="execute_sell",
+                metadata={
+                    "exit_price": current_price,
+                    "exit_reason": exit_reason,
+                    "dry_run": self.dry_run
+                }
+            )
+
+    async def monitor_orders(self) -> None:
+        """
+        Monitor active orders and update their state.
+        
+        Checks exchange for order status and updates State Machine accordingly.
+        """
+        if not self.active_orders:
+            return
+        
+        orders_to_remove = []
+        
+        for order_id, order in list(self.active_orders.items()):
+            if not order.is_active():
+                # Order is in terminal state, remove from monitoring
+                orders_to_remove.append(order_id)
+                continue
+            
+            try:
+                # Check order status on exchange (only for real orders)
+                if not self.dry_run and order.exchange_id:
+                    try:
+                        # Try to fetch order status (if method exists)
+                        if hasattr(self.exchange, 'fetch_order'):
+                            exchange_order = await self.exchange.fetch_order(order.exchange_id, order.symbol)
+                            
+                            # Update filled amount
+                            filled = exchange_order.get('filled', 0)
+                            if filled > 0:
+                                order.update_filled(float(filled))
+                            
+                            # Check status
+                            status = exchange_order.get('status', 'unknown')
+                            if status == 'closed' or status == 'filled':
+                                if order.filled_amount >= order.amount:
+                                    order.transition_to(OrderState.FILLED)
+                                else:
+                                    # Partial fill
+                                    order.transition_to(OrderState.PARTIAL_FILLED)
+                            elif status == 'canceled' or status == 'cancelled':
+                                order.transition_to(OrderState.CANCELLED)
+                            elif status == 'rejected':
+                                order.transition_to(OrderState.REJECTED)
+                            
+                            logger.debug(
+                                f"Order {order_id} status: {status}, "
+                                f"filled: {order.filled_amount}/{order.amount}, "
+                                f"state: {order.state.value}"
+                            )
+                        else:
+                            # Fallback: check via get_open_orders
+                            open_orders = await self.exchange.get_open_orders(symbol=order.symbol)
+                            order_found = False
+                            for open_order in open_orders:
+                                if open_order.get('id') == order.exchange_id:
+                                    order_found = True
+                                    filled = open_order.get('filled', 0)
+                                    if filled > 0:
+                                        order.update_filled(float(filled))
+                                    break
+                            
+                            # If order not found in open orders, assume filled
+                            if not order_found and order.state == OrderState.SUBMITTED:
+                                order.transition_to(OrderState.FILLED)
+                                logger.debug(f"Order {order_id} not in open orders, assuming filled")
+                    except Exception as e:
+                        logger.debug(f"Could not fetch order {order_id} status: {e}")
+                        # Continue monitoring on next cycle
+                
+                # Remove terminal orders
+                if order.is_terminal():
+                    orders_to_remove.append(order_id)
+                    await self._on_order_completed(order)
+                    
+            except Exception as e:
+                logger.debug(f"Error monitoring order {order_id}: {e}")
+        
+        # Clean up terminal orders
+        for order_id in orders_to_remove:
+            if order_id in self.active_orders:
+                del self.active_orders[order_id]
+                logger.debug(f"Removed terminal order {order_id} from monitoring")
+    
+    async def _on_order_completed(self, order: Order) -> None:
+        """
+        Handle completed order (filled, cancelled, rejected, expired).
+        
+        Args:
+            order: Completed order
+        """
+        logger.info(
+            f"Order completed: {order.symbol} {order.side} "
+            f"{order.state.value} (filled: {order.filled_amount}/{order.amount})"
+        )
+        
+        if order.state == OrderState.FILLED and order.side == 'buy':
+            # Buy order filled - position opened
+            logger.debug(f"Buy order {order.id} filled - position should be open")
+        elif order.state == OrderState.FILLED and order.side == 'sell':
+            # Sell order filled - position closed
+            logger.debug(f"Sell order {order.id} filled - position should be closed")
+        elif order.state == OrderState.REJECTED:
+            logger.warning(f"Order {order.id} rejected: {order.error}")
+        elif order.state == OrderState.CANCELLED:
+            logger.info(f"Order {order.id} cancelled")
+
+    async def initialize(self) -> None:
+        """Initialize all components."""
+        logger.info("Initializing trading engine...")
+        await self.exchange.initialize()
+        logger.success("Trading engine initialized")
+
+    async def shutdown(self) -> None:
+        """Shutdown all components."""
+        logger.info("Shutting down trading engine...")
+        await self.exchange.close()
+        await self.ai_provider.close()
+        logger.success("Trading engine shutdown complete")

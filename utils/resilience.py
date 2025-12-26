@@ -150,3 +150,4 @@ def retry_on_error(
 exchange_circuit = CircuitBreaker(failure_threshold=5, timeout_seconds=60)
 ai_circuit = CircuitBreaker(failure_threshold=3, timeout_seconds=120)
 
+

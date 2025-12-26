@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     storage_path: str = "storage/trades"  # Directory for daily JSONL files (trades_YYYY-MM-DD.jsonl)
     storage_retention_days: int = 30  # Keep trade files for last N days
     
+    # Module enable/disable flags
+    enable_conservative_module: bool = True  # Enable conservative trading module
+    enable_launch_sniper_module: bool = False  # Enable launch sniper module (high-risk)
+    
     
 # Global settings instance
 settings = Settings()

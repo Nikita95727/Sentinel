@@ -89,3 +89,4 @@ class SQLiteScheduler:
         """Manually trigger sync immediately (for testing)."""
         await self._daily_sync()
 
+

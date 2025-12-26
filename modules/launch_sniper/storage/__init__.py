@@ -1,0 +1,2 @@
+"""Storage for launch sniper."""
+

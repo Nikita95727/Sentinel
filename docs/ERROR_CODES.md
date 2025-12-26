@@ -124,3 +124,4 @@ Every error includes:
 - **stack_trace**: Full stack trace
 - **causal_chain**: Chain of related errors
 
+
