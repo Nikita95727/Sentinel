@@ -3,14 +3,12 @@ Core application entry point.
 Manages module lifecycle and shared resources.
 """
 import asyncio
-import logging
 import sys
 from pathlib import Path
 from typing import List, Dict, Any
 
+from loguru import logger
 from core.models import CoreContext, TradingModule, ModuleStatus
-
-logger = logging.getLogger(__name__)
 
 
 class SentinelApp:
