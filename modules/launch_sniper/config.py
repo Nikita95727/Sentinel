@@ -8,10 +8,12 @@ from pathlib import Path
 class LaunchSniperConfig:
     """Configuration for launch sniper module."""
     
-    # Bybit API
-    BYBIT_API_KEY: Optional[str] = os.getenv("BYBIT_API_KEY")
-    BYBIT_API_SECRET: Optional[str] = os.getenv("BYBIT_API_SECRET")
-    BYBIT_TESTNET: bool = os.getenv("BYBIT_TESTNET", "true").lower() == "true"
+    # Bybit API - try both naming conventions
+    BYBIT_API_KEY: Optional[str] = os.getenv("BYBIT_API_KEY") or os.getenv("bybit_api_key")
+    BYBIT_API_SECRET: Optional[str] = os.getenv("BYBIT_API_SECRET") or os.getenv("bybit_api_secret")
+    BYBIT_TESTNET: bool = (
+        os.getenv("BYBIT_TESTNET", os.getenv("bybit_testnet", "true"))
+    ).lower() == "true"
     
     # Grok AI
     GROK_API_KEY: Optional[str] = os.getenv("GROK_API_KEY")
