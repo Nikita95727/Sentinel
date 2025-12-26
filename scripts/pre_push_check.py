@@ -37,8 +37,12 @@ def check_critical_methods() -> Tuple[bool, str]:
     """Check that critical methods exist in key files."""
     errors = []
     
-    # Check engine.py for critical methods
-    engine_path = Path("core/engine.py")
+    # Check engine.py for critical methods (now in modules/conservative/execution/engine.py)
+    engine_path = Path("modules/conservative/execution/engine.py")
+    if not engine_path.exists():
+        # Fallback to old location for backward compatibility
+        engine_path = Path("core/engine.py")
+    
     if engine_path.exists():
         with open(engine_path, 'r', encoding='utf-8') as f:
             engine_code = f.read()
@@ -53,7 +57,7 @@ def check_critical_methods() -> Tuple[bool, str]:
         
         for method in required_methods:
             if f"def {method}" not in engine_code:
-                errors.append(f"Missing method: {method} in core/engine.py")
+                errors.append(f"Missing method: {method} in {engine_path}")
     
     # Check grok.py for critical methods
     grok_path = Path("providers/grok.py")
@@ -106,7 +110,8 @@ def main():
     
     # Critical files to check
     critical_files = [
-        Path("core/engine.py"),
+        Path("modules/conservative/execution/engine.py"),  # New location
+        Path("core/engine.py"),  # Old location (for backward compatibility)
         Path("providers/grok.py"),
         Path("main.py"),
         Path("services/analytics.py"),
