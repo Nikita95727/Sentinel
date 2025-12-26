@@ -2,15 +2,16 @@
 Phase A: Discovery - Find new listing announcements from Bybit.
 """
 import asyncio
-import logging
+import json
 from datetime import datetime, timedelta
-from typing import List, Optional
+from pathlib import Path
+from typing import List, Optional, Set, Dict
 import ccxt.async_support as ccxt
 
+from loguru import logger
+import httpx
 from modules.launch_sniper.core.events import LaunchEvent
 from modules.launch_sniper.config import LaunchSniperConfig
-
-logger = logging.getLogger(__name__)
 
 
 class DiscoveryService:
@@ -19,6 +20,8 @@ class DiscoveryService:
     def __init__(self):
         self.config = LaunchSniperConfig
         self.exchange: Optional[ccxt.bybit] = None
+        self.known_pairs_file = self.config.STORAGE_DIR / "known_pairs.json"
+        self.known_pairs: Set[str] = set()
     
     async def initialize(self):
         """Initialize exchange connection."""
@@ -44,14 +47,45 @@ class DiscoveryService:
             await self.exchange.load_markets()
             logger.info("  ✅ Connection test successful")
             
+            # Load known pairs
+            await self._load_known_pairs()
+            
             logger.info("✅ Discovery service initialized successfully")
         except Exception as e:
             logger.error(f"❌ Failed to initialize discovery service: {e}", exc_info=True)
             raise
     
+    async def _load_known_pairs(self):
+        """Load previously known trading pairs from storage."""
+        try:
+            if self.known_pairs_file.exists():
+                with open(self.known_pairs_file, 'r') as f:
+                    data = json.load(f)
+                    self.known_pairs = set(data.get('pairs', []))
+                    logger.info(f"  ✅ Loaded {len(self.known_pairs)} known pairs from storage")
+            else:
+                logger.info("  ℹ️  No known pairs file found (first run)")
+                self.known_pairs = set()
+        except Exception as e:
+            logger.warning(f"  ⚠️  Failed to load known pairs: {e}")
+            self.known_pairs = set()
+    
+    async def _save_known_pairs(self, pairs: Set[str]):
+        """Save known trading pairs to storage."""
+        try:
+            self.known_pairs_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.known_pairs_file, 'w') as f:
+                json.dump({
+                    'pairs': sorted(list(pairs)),
+                    'last_updated': datetime.utcnow().isoformat()
+                }, f, indent=2)
+            logger.debug(f"Saved {len(pairs)} known pairs to storage")
+        except Exception as e:
+            logger.warning(f"Failed to save known pairs: {e}")
+    
     async def discover_listings(self) -> List[LaunchEvent]:
         """
-        Discover new listing announcements.
+        Discover new listing announcements by detecting new trading pairs.
         
         Returns:
             List of LaunchEvent objects
@@ -68,24 +102,96 @@ class DiscoveryService:
         
         try:
             logger.info("Step 1: Loading markets from Bybit...")
-            # Method 1: Check Bybit announcements (if API supports)
-            # Note: Bybit may not have direct API for announcements
-            # This is a placeholder - actual implementation depends on Bybit API
-            
-            # Method 2: Monitor new trading pairs
             markets = await self.exchange.load_markets(reload=True)
             logger.info(f"✅ Loaded {len(markets)} markets from Bybit")
             
-            # Get recently added pairs (this is a heuristic)
-            # In production, you might need to:
-            # - Track known pairs and detect new ones
-            # - Use Bybit's announcement API if available
-            # - Parse Bybit's website/API for listing announcements
+            # Filter spot markets only
+            spot_markets = {
+                symbol: market 
+                for symbol, market in markets.items() 
+                if market.get('type') == 'spot' and market.get('active', True)
+            }
+            logger.info(f"  - Found {len(spot_markets)} active spot markets")
             
-            # For now, return empty list (to be implemented based on actual Bybit API)
-            logger.info("Step 2: Checking for new listings...")
-            logger.info("  ℹ️  Discovery completed - no new listings found (placeholder implementation)")
-            logger.info("  ℹ️  Note: Actual listing detection needs Bybit announcement API integration")
+            # Get current trading pairs
+            current_pairs = set(spot_markets.keys())
+            logger.info(f"  - Current pairs: {len(current_pairs)}")
+            logger.info(f"  - Known pairs: {len(self.known_pairs)}")
+            
+            # Find new pairs
+            new_pairs = current_pairs - self.known_pairs
+            
+            if new_pairs:
+                logger.info(f"Step 2: Found {len(new_pairs)} new trading pairs!")
+                for pair in sorted(new_pairs):
+                    logger.info(f"  🆕 New pair: {pair}")
+                    
+                    # Get market info
+                    market = spot_markets.get(pair, {})
+                    market_info = market.get('info', {})
+                    
+                    # Try to get listing time from market data
+                    # Bybit markets have 'created' timestamp or we can use current time
+                    listing_time = datetime.utcnow()
+                    
+                    # Try to parse creation time if available
+                    if 'created' in market_info:
+                        try:
+                            # Bybit timestamp might be in milliseconds
+                            timestamp = int(market_info['created'])
+                            if timestamp > 1e10:  # milliseconds
+                                timestamp = timestamp / 1000
+                            listing_time = datetime.utcnow().fromtimestamp(timestamp)
+                        except:
+                            pass
+                    
+                    # Check if listing is within our window
+                    time_until_listing = (listing_time - datetime.utcnow()).total_seconds() / 3600
+                    
+                    # If pair was just created (within last hour), treat as new listing
+                    if time_until_listing >= -1 and time_until_listing <= self.config.LISTING_WINDOW_HOURS:
+                        event = LaunchEvent(
+                            symbol=pair.split('/')[0],  # Base currency
+                            trading_pair=pair,
+                            listing_time=listing_time,
+                            source="bybit",
+                            metadata={
+                                'market_info': market_info,
+                                'discovered_at': datetime.utcnow().isoformat(),
+                                'market_data': {
+                                    'base': market.get('base'),
+                                    'quote': market.get('quote'),
+                                    'active': market.get('active', True),
+                                    'precision': market.get('precision', {}),
+                                    'limits': market.get('limits', {})
+                                }
+                            }
+                        )
+                        events.append(event)
+                        logger.info(f"  ✅ Created LaunchEvent for {pair} (listing time: {listing_time})")
+                    else:
+                        logger.debug(f"  ⏭️  Skipping {pair} (outside window: {time_until_listing:.1f}h)")
+            else:
+                logger.info("Step 2: No new trading pairs found")
+                logger.info("  ℹ️  All current pairs are already known")
+            
+            # Update known pairs
+            if new_pairs:
+                self.known_pairs.update(new_pairs)
+                await self._save_known_pairs(self.known_pairs)
+                logger.info(f"  ✅ Updated known pairs list ({len(self.known_pairs)} total)")
+            
+            # Also try to get upcoming listings via Bybit API v5
+            logger.info("Step 3: Checking Bybit API v5 for upcoming listings...")
+            try:
+                upcoming_events = await self._fetch_upcoming_listings()
+                if upcoming_events:
+                    logger.info(f"  ✅ Found {len(upcoming_events)} upcoming listings from API")
+                    events.extend(upcoming_events)
+                else:
+                    logger.info("  ℹ️  No upcoming listings found in API")
+            except Exception as e:
+                logger.warning(f"  ⚠️  Failed to fetch upcoming listings from API: {e}")
             
         except Exception as e:
             logger.error(f"❌ Error during discovery: {e}", exc_info=True)
@@ -93,6 +199,120 @@ class DiscoveryService:
         logger.info(f"Discovery complete: {len(events)} events found")
         logger.info("=" * 80)
         return events
+    
+    async def _fetch_upcoming_listings(self) -> List[LaunchEvent]:
+        """
+        Fetch upcoming listings from Bybit API v5.
+        
+        Returns:
+            List of LaunchEvent objects for upcoming listings
+        """
+        events = []
+        
+        try:
+            # Bybit API v5 endpoint for instruments
+            # We'll use the exchange's request method to call Bybit REST API directly
+            if not self.exchange:
+                return events
+            
+            # Try to get instruments list with filter for new listings
+            # Bybit API v5: GET /v5/market/instruments-info
+            base_url = "https://api-testnet.bybit.com" if self.config.BYBIT_TESTNET else "https://api.bybit.com"
+            
+            import httpx
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                # Get instruments info
+                url = f"{base_url}/v5/market/instruments-info"
+                params = {
+                    'category': 'spot',
+                    'status': 'Trading'  # Only active trading pairs
+                }
+                
+                response = await client.get(url, params=params)
+                response.raise_for_status()
+                data = response.json()
+                
+                if data.get('retCode') == 0:
+                    result = data.get('result', {})
+                    instruments = result.get('list', [])
+                    
+                    logger.info(f"  - Fetched {len(instruments)} instruments from Bybit API")
+                    
+                    # Check each instrument for recent listing
+                    for instrument in instruments:
+                        symbol = instrument.get('symbol', '')
+                        if not symbol:
+                            continue
+                        
+                        # Check if this is a new pair
+                        pair = f"{symbol}/USDT"  # Assuming USDT quote
+                        if pair not in self.known_pairs:
+                            # Get listing time from instrument data
+                            listing_time = datetime.utcnow()
+                            
+                            # Check if instrument has launch time
+                            if 'launchTime' in instrument:
+                                try:
+                                    launch_timestamp = int(instrument['launchTime'])
+                                    if launch_timestamp > 1e10:
+                                        launch_timestamp = launch_timestamp / 1000
+                                    listing_time = datetime.utcnow().fromtimestamp(launch_timestamp)
+                                except:
+                                    pass
+                            
+                            # Check if within window
+                            time_until = (listing_time - datetime.utcnow()).total_seconds() / 3600
+                            if -1 <= time_until <= self.config.LISTING_WINDOW_HOURS:
+                                event = LaunchEvent(
+                                    symbol=symbol,
+                                    trading_pair=pair,
+                                    listing_time=listing_time,
+                                    source="bybit_api_v5",
+                                    metadata={
+                                        'instrument': instrument,
+                                        'discovered_at': datetime.utcnow().isoformat()
+                                    }
+                                )
+                                events.append(event)
+                                logger.info(f"  ✅ Found upcoming listing: {pair} at {listing_time}")
+                
+        except httpx.HTTPError as e:
+            logger.debug(f"HTTP error fetching upcoming listings: {e}")
+        except Exception as e:
+            logger.debug(f"Error fetching upcoming listings: {e}")
+        
+        return events
+    
+    async def get_market_info(self, symbol: str) -> Optional[Dict]:
+        """
+        Get market information for a symbol.
+        
+        Args:
+            symbol: Trading pair symbol (e.g., 'BTC/USDT')
+            
+        Returns:
+            Market information dict or None
+        """
+        if not self.exchange:
+            await self.initialize()
+        
+        try:
+            markets = await self.exchange.load_markets()
+            market = markets.get(symbol)
+            if market:
+                return {
+                    'symbol': symbol,
+                    'base': market.get('base'),
+                    'quote': market.get('quote'),
+                    'active': market.get('active', True),
+                    'precision': market.get('precision', {}),
+                    'limits': market.get('limits', {}),
+                    'info': market.get('info', {})
+                }
+        except Exception as e:
+            logger.error(f"Error getting market info for {symbol}: {e}")
+        
+        return None
     
     async def parse_listing_announcement(self, announcement: dict) -> Optional[LaunchEvent]:
         """
