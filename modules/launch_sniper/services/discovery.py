@@ -22,7 +22,12 @@ class DiscoveryService:
     
     async def initialize(self):
         """Initialize exchange connection."""
+        logger.info("Initializing DiscoveryService...")
+        logger.info(f"  - Testnet: {self.config.BYBIT_TESTNET}")
+        logger.info(f"  - API Key: {'*' * 10 if self.config.BYBIT_API_KEY else 'NOT SET'}")
+        
         try:
+            logger.info("  - Creating ccxt.bybit instance...")
             self.exchange = ccxt.bybit({
                 'apiKey': self.config.BYBIT_API_KEY,
                 'secret': self.config.BYBIT_API_SECRET,
@@ -32,9 +37,16 @@ class DiscoveryService:
                     'test': self.config.BYBIT_TESTNET
                 }
             })
-            logger.info("Discovery service initialized")
+            logger.info("  ✅ ccxt.bybit instance created")
+            
+            # Test connection
+            logger.info("  - Testing connection...")
+            await self.exchange.load_markets()
+            logger.info("  ✅ Connection test successful")
+            
+            logger.info("✅ Discovery service initialized successfully")
         except Exception as e:
-            logger.error(f"Failed to initialize discovery service: {e}")
+            logger.error(f"❌ Failed to initialize discovery service: {e}", exc_info=True)
             raise
     
     async def discover_listings(self) -> List[LaunchEvent]:
@@ -44,18 +56,25 @@ class DiscoveryService:
         Returns:
             List of LaunchEvent objects
         """
+        logger.info("=" * 80)
+        logger.info("DISCOVERY PHASE - Starting listing discovery")
+        logger.info("=" * 80)
+        
         if not self.exchange:
+            logger.info("Exchange not initialized, initializing now...")
             await self.initialize()
         
         events = []
         
         try:
+            logger.info("Step 1: Loading markets from Bybit...")
             # Method 1: Check Bybit announcements (if API supports)
             # Note: Bybit may not have direct API for announcements
             # This is a placeholder - actual implementation depends on Bybit API
             
             # Method 2: Monitor new trading pairs
             markets = await self.exchange.load_markets(reload=True)
+            logger.info(f"✅ Loaded {len(markets)} markets from Bybit")
             
             # Get recently added pairs (this is a heuristic)
             # In production, you might need to:
@@ -64,11 +83,15 @@ class DiscoveryService:
             # - Parse Bybit's website/API for listing announcements
             
             # For now, return empty list (to be implemented based on actual Bybit API)
-            logger.info("Discovery completed - no new listings found (placeholder)")
+            logger.info("Step 2: Checking for new listings...")
+            logger.info("  ℹ️  Discovery completed - no new listings found (placeholder implementation)")
+            logger.info("  ℹ️  Note: Actual listing detection needs Bybit announcement API integration")
             
         except Exception as e:
-            logger.error(f"Error during discovery: {e}")
+            logger.error(f"❌ Error during discovery: {e}", exc_info=True)
         
+        logger.info(f"Discovery complete: {len(events)} events found")
+        logger.info("=" * 80)
         return events
     
     async def parse_listing_announcement(self, announcement: dict) -> Optional[LaunchEvent]:

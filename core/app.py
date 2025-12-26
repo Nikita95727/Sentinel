@@ -60,11 +60,15 @@ class SentinelApp:
         logger.info(f"Starting {len(self.modules)} modules...")
         
         for module in self.modules:
+            module_name = module.__class__.__name__
+            logger.info(f"Attempting to start module: {module_name}")
             try:
                 await module.start()
-                logger.info(f"Module {module.__class__.__name__} started")
+                logger.info(f"Module {module_name} started successfully")
             except Exception as e:
-                logger.error(f"Failed to start module {module.__class__.__name__}: {e}", exc_info=True)
+                logger.error(f"Failed to start module {module_name}: {e}", exc_info=True)
+                # Don't raise - continue with other modules
+                # But log the error clearly
     
     async def stop_all(self):
         """Stop all registered modules."""

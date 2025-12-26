@@ -28,25 +28,39 @@ class LaunchSniperModule(TradingModule):
     
     async def start(self):
         """Start the launch sniper module."""
+        logger.info("=" * 80)
+        logger.info("LAUNCH SNIPER MODULE - START")
+        logger.info("=" * 80)
+        
         if self.status != ModuleStatus.STOPPED:
-            logger.warning("Module already started")
+            logger.warning(f"Module already started (status: {self.status})")
             return
         
         self.status = ModuleStatus.STARTING
         logger.info("Starting launch sniper module...")
+        logger.info(f"Module status: {self.status}")
         
         try:
+            logger.info("Step 1: Initializing orchestrator...")
             # Initialize orchestrator
             await self._initialize()
+            logger.info("✅ Orchestrator initialized")
             
+            logger.info("Step 2: Running discovery phase...")
             # Run initial discovery
-            await self.orchestrator.run_discovery_phase()
+            events = await self.orchestrator.run_discovery_phase()
+            logger.info(f"✅ Discovery complete: {len(events)} events found")
             
             self.status = ModuleStatus.RUNNING
-            logger.info("Launch sniper module started successfully")
+            logger.info("=" * 80)
+            logger.info("✅ Launch sniper module started successfully")
+            logger.info(f"Status: {self.status}")
+            logger.info("=" * 80)
             
         except Exception as e:
-            logger.error(f"Failed to start launch sniper module: {e}", exc_info=True)
+            logger.error("=" * 80)
+            logger.error(f"❌ Failed to start launch sniper module: {e}")
+            logger.error("=" * 80, exc_info=True)
             self.status = ModuleStatus.ERROR
             raise
     
@@ -80,30 +94,26 @@ class LaunchSniperModule(TradingModule):
     async def _initialize(self):
         """Initialize module components."""
         if self._initialized:
+            logger.info("Module already initialized, skipping...")
             return
         
-        # Use exchange from core context (shared resource)
-        # But launch sniper needs its own exchange instance for isolation
-        # So we'll create a new one but use same credentials
+        logger.info("Initializing launch sniper module components...")
         
-        from providers.bybit import BybitProvider
-        
-        # Create new exchange instance for launch sniper (isolated)
-        exchange = BybitProvider(
-            api_key=self.core_context.config.get('bybit_api_key'),
-            api_secret=self.core_context.config.get('bybit_api_secret'),
-            testnet=self.core_context.config.get('bybit_testnet', True)
-        )
-        
-        # Initialize orchestrator
-        self.orchestrator = LaunchSniperOrchestrator()
-        
-        # Initialize orchestrator (it will create its own exchange instances)
-        await self.orchestrator.initialize()
-        
-        # Note: Launch sniper uses its own exchange instances for isolation
-        # This is intentional - launch sniper should be completely isolated
-        
-        self._initialized = True
-        logger.info("Launch sniper module initialized")
+        try:
+            # Initialize orchestrator
+            logger.info("Creating LaunchSniperOrchestrator instance...")
+            self.orchestrator = LaunchSniperOrchestrator()
+            logger.info("✅ Orchestrator instance created")
+            
+            # Initialize orchestrator (it will create its own exchange instances)
+            logger.info("Initializing orchestrator services...")
+            await self.orchestrator.initialize()
+            logger.info("✅ Orchestrator services initialized")
+            
+            self._initialized = True
+            logger.info("✅ Launch sniper module initialized successfully")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize launch sniper module: {e}", exc_info=True)
+            raise
 

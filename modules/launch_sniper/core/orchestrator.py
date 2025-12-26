@@ -37,14 +37,27 @@ class LaunchSniperOrchestrator:
     
     async def initialize(self):
         """Initialize all services."""
+        logger.info("Initializing Launch Sniper Orchestrator...")
         try:
+            logger.info("  - Initializing DiscoveryService...")
             await self.discovery.initialize()
+            logger.info("  ✅ DiscoveryService initialized")
+            
+            logger.info("  - Initializing AIAnalyzer...")
             await self.ai_analyzer.initialize()
+            logger.info("  ✅ AIAnalyzer initialized")
+            
+            logger.info("  - Initializing ArmingService...")
             await self.arming.initialize()
+            logger.info("  ✅ ArmingService initialized")
+            
+            logger.info("  - Initializing ExecutionService...")
             await self.executor.initialize()
-            logger.info("Launch sniper orchestrator initialized")
+            logger.info("  ✅ ExecutionService initialized")
+            
+            logger.info("✅ Launch sniper orchestrator initialized successfully")
         except Exception as e:
-            logger.error(f"Failed to initialize orchestrator: {e}")
+            logger.error(f"❌ Failed to initialize orchestrator: {e}", exc_info=True)
             raise
     
     async def run_discovery_phase(self) -> List[LaunchEvent]:
