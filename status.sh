@@ -1,114 +1,105 @@
 #!/bin/bash
+# Status check script for Sentinel bot with modular architecture
+# Monitors both conservative and launch_sniper modules
 
-###############################################################################
-# Sentinel Trading Bot - Status Script
-# 
-# Проверка статуса бота
-# Использование: ./status.sh
-###############################################################################
+set -e
 
-# Цвета для вывода
-RED='\033[0;31m'
+# Colors
 GREEN='\033[0;32m'
+RED='\033[0;31m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Переменные
-PROJECT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-PID_FILE="$PROJECT_DIR/sentinel.pid"
+PROJECT_DIR="${1:-$(pwd)}"
+cd "$PROJECT_DIR" || exit 1
 
-# Функции для вывода
-print_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
-}
+echo -e "${BLUE}========================================${NC}"
+echo -e "${BLUE}SENTINEL BOT STATUS${NC}"
+echo -e "${BLUE}========================================${NC}"
+echo ""
 
-print_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
-}
-
-print_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
-}
-
-print_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
-
-# Проверка статуса
-check_status() {
+# Check PM2 status
+if command -v pm2 &> /dev/null; then
+    echo -e "${BLUE}🤖 Bot Process:${NC}"
+    pm2 status | grep -E "sentinel|name" || echo "  No PM2 processes found"
     echo ""
-    print_info "📊 Статус Sentinel Trading Bot"
+fi
+
+# Check if bot is running via process
+if pgrep -f "main.py" > /dev/null; then
+    PID=$(pgrep -f "main.py" | head -1)
+    echo -e "${GREEN}✅ Bot is running (PID: $PID)${NC}"
     echo ""
-    
-    if [ ! -f "$PID_FILE" ]; then
-        print_warning "Бот не запущен (PID файл не найден)"
-        echo ""
-        print_info "Запуск: ./start.sh"
-        exit 0
-    fi
-    
-    PID=$(cat "$PID_FILE")
-    
-    if ! ps -p "$PID" > /dev/null 2>&1; then
-        print_error "Бот не запущен (процесс с PID $PID не найден)"
-        print_warning "Удаляю устаревший PID файл"
-        rm -f "$PID_FILE"
-        echo ""
-        print_info "Запуск: ./start.sh"
-        exit 1
-    fi
-    
-    # Информация о процессе
-    print_success "✅ Бот запущен"
+else
+    echo -e "${RED}❌ Bot is not running${NC}"
     echo ""
-    print_info "PID: $PID"
+fi
+
+# Module status
+echo -e "${BLUE}📊 MODULE STATUS${NC}"
+echo "----------------------------------------"
+
+# Conservative module
+echo -e "${BLUE}Conservative Module:${NC}"
+if [ -d "storage/conservative" ]; then
+    TRADE_COUNT=$(find storage/conservative/trades -name "*.jsonl" -type f 2>/dev/null | wc -l)
+    ANALYTICS_COUNT=$(find storage/conservative/analytics -name "*.jsonl" -type f 2>/dev/null | wc -l)
+    LATEST_TRADE=$(find storage/conservative/trades -name "*.jsonl" -type f -exec stat -c '%Y %n' {} \; 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2)
     
-    # Время работы
-    if command -v ps &> /dev/null; then
-        RUNTIME=$(ps -o etime= -p "$PID" 2>/dev/null | xargs)
-        if [ -n "$RUNTIME" ]; then
-            print_info "Время работы: $RUNTIME"
-        fi
+    if [ -n "$LATEST_TRADE" ]; then
+        LATEST_TIME=$(stat -c '%y' "$LATEST_TRADE" 2>/dev/null | cut -d' ' -f1,2 | cut -d'.' -f1)
+        echo -e "  ${GREEN}✅ Active${NC}"
+        echo -e "  Trades: $TRADE_COUNT files"
+        echo -e "  Analytics: $ANALYTICS_COUNT files"
+        echo -e "  Latest: $LATEST_TIME"
+    else
+        echo -e "  ${YELLOW}⚠️  No data files${NC}"
     fi
+else
+    echo -e "  ${YELLOW}⚠️  Storage directory not found${NC}"
+fi
+echo ""
+
+# Launch sniper module
+echo -e "${BLUE}Launch Sniper Module:${NC}"
+if [ -d "storage/launch_sniper" ]; then
+    TRADE_COUNT=$(find storage/launch_sniper -name "*.jsonl" -type f 2>/dev/null | wc -l)
+    LATEST_FILE=$(find storage/launch_sniper -name "*.jsonl" -type f -exec stat -c '%Y %n' {} \; 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2)
     
-    # Использование ресурсов
-    if command -v ps &> /dev/null; then
-        CPU_MEM=$(ps -o %cpu,%mem= -p "$PID" 2>/dev/null | xargs)
-        if [ -n "$CPU_MEM" ]; then
-            CPU=$(echo "$CPU_MEM" | awk '{print $1}')
-            MEM=$(echo "$CPU_MEM" | awk '{print $2}')
-            print_info "CPU: ${CPU}% | RAM: ${MEM}%"
-        fi
+    if [ -n "$LATEST_FILE" ]; then
+        LATEST_TIME=$(stat -c '%y' "$LATEST_FILE" 2>/dev/null | cut -d' ' -f1,2 | cut -d'.' -f1)
+        echo -e "  ${GREEN}✅ Active${NC}"
+        echo -e "  Files: $TRADE_COUNT"
+        echo -e "  Latest: $LATEST_TIME"
+    else
+        echo -e "  ${YELLOW}⚠️  No data files${NC}"
     fi
-    
-    # Последний лог файл
-    LATEST_LOG=$(ls -t "$PROJECT_DIR/logs"/*.log 2>/dev/null | head -1)
+else
+    echo -e "  ${YELLOW}⚠️  Storage directory not found${NC}"
+fi
+echo ""
+
+# Recent logs
+echo -e "${BLUE}📋 Recent Logs:${NC}"
+if [ -d "logs" ]; then
+    LATEST_LOG=$(find logs -name "*.log" -type f -exec stat -c '%Y %n' {} \; 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2)
     if [ -n "$LATEST_LOG" ]; then
-        echo ""
-        print_info "Последний лог: $LATEST_LOG"
-        print_info "Размер: $(du -h "$LATEST_LOG" | cut -f1)"
-        
-        # Последние строки лога
-        echo ""
-        print_info "Последние 5 строк лога:"
-        echo "---"
-        tail -5 "$LATEST_LOG" 2>/dev/null || echo "Не удалось прочитать лог"
-        echo "---"
+        echo "  Last 5 lines from $LATEST_LOG:"
+        tail -5 "$LATEST_LOG" 2>/dev/null | sed 's/^/  /' || echo "  (cannot read log file)"
+    else
+        echo "  No log files found"
     fi
-    
-    echo ""
-    print_info "Команды:"
-    print_info "  ./stop.sh        - Остановить бота"
-    print_info "  tail -f $LATEST_LOG  - Смотреть логи в реальном времени"
-}
+else
+    echo "  No logs directory"
+fi
+echo ""
 
-# Главная функция
-main() {
-    check_status
-}
+# System resources
+echo -e "${BLUE}💻 System Resources:${NC}"
+if command -v pm2 &> /dev/null; then
+    pm2 status | grep sentinel | awk '{print "  CPU: "$10", MEM: "$11}'
+fi
+echo ""
 
-# Запуск
-main "$@"
-
-
+echo -e "${BLUE}========================================${NC}"
