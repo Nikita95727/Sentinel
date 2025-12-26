@@ -118,8 +118,17 @@ class DiscoveryService:
             logger.info(f"  - Current pairs: {len(current_pairs)}")
             logger.info(f"  - Known pairs: {len(self.known_pairs)}")
             
-            # Find new pairs
-            new_pairs = current_pairs - self.known_pairs
+            # If this is first run (no known pairs), save all current pairs as known
+            if len(self.known_pairs) == 0:
+                logger.info("  ℹ️  First run detected - saving all current pairs as known")
+                self.known_pairs = current_pairs.copy()
+                await self._save_known_pairs(self.known_pairs)
+                logger.info(f"  ✅ Saved {len(self.known_pairs)} pairs as baseline")
+                # Don't treat existing pairs as new listings on first run
+                new_pairs = set()
+            else:
+                # Find new pairs (only those not in known list)
+                new_pairs = current_pairs - self.known_pairs
             
             if new_pairs:
                 logger.info(f"Step 2: Found {len(new_pairs)} new trading pairs!")
@@ -182,16 +191,20 @@ class DiscoveryService:
                 logger.info(f"  ✅ Updated known pairs list ({len(self.known_pairs)} total)")
             
             # Also try to get upcoming listings via Bybit API v5
-            logger.info("Step 3: Checking Bybit API v5 for upcoming listings...")
-            try:
-                upcoming_events = await self._fetch_upcoming_listings()
-                if upcoming_events:
-                    logger.info(f"  ✅ Found {len(upcoming_events)} upcoming listings from API")
-                    events.extend(upcoming_events)
-                else:
-                    logger.info("  ℹ️  No upcoming listings found in API")
-            except Exception as e:
-                logger.warning(f"  ⚠️  Failed to fetch upcoming listings from API: {e}")
+            # Only if we have known pairs (not first run)
+            if len(self.known_pairs) > 0:
+                logger.info("Step 3: Checking Bybit API v5 for upcoming listings...")
+                try:
+                    upcoming_events = await self._fetch_upcoming_listings(current_pairs)
+                    if upcoming_events:
+                        logger.info(f"  ✅ Found {len(upcoming_events)} upcoming listings from API")
+                        events.extend(upcoming_events)
+                    else:
+                        logger.info("  ℹ️  No upcoming listings found in API")
+                except Exception as e:
+                    logger.warning(f"  ⚠️  Failed to fetch upcoming listings from API: {e}")
+            else:
+                logger.info("Step 3: Skipping API check (first run - baseline established)")
             
         except Exception as e:
             logger.error(f"❌ Error during discovery: {e}", exc_info=True)
@@ -200,7 +213,7 @@ class DiscoveryService:
         logger.info("=" * 80)
         return events
     
-    async def _fetch_upcoming_listings(self) -> List[LaunchEvent]:
+    async def _fetch_upcoming_listings(self, current_pairs: Set[str]) -> List[LaunchEvent]:
         """
         Fetch upcoming listings from Bybit API v5.
         
@@ -244,9 +257,12 @@ class DiscoveryService:
                         if not symbol:
                             continue
                         
-                        # Check if this is a new pair
-                        pair = f"{symbol}/USDT"  # Assuming USDT quote
-                        if pair not in self.known_pairs:
+                        # Get quote currency from instrument
+                        quote_currency = instrument.get('quoteCoin', 'USDT')
+                        pair = f"{symbol}/{quote_currency}"
+                        
+                        # Only check pairs that are not in known list
+                        if pair not in self.known_pairs and pair in current_pairs:
                             # Get listing time from instrument data
                             listing_time = datetime.utcnow()
                             
@@ -260,21 +276,25 @@ class DiscoveryService:
                                 except:
                                     pass
                             
-                            # Check if within window
+                            # Check if within window and is actually new
                             time_until = (listing_time - datetime.utcnow()).total_seconds() / 3600
                             if -1 <= time_until <= self.config.LISTING_WINDOW_HOURS:
-                                event = LaunchEvent(
-                                    symbol=symbol,
-                                    trading_pair=pair,
-                                    listing_time=listing_time,
-                                    source="bybit_api_v5",
-                                    metadata={
-                                        'instrument': instrument,
-                                        'discovered_at': datetime.utcnow().isoformat()
-                                    }
-                                )
-                                events.append(event)
-                                logger.info(f"  ✅ Found upcoming listing: {pair} at {listing_time}")
+                                # Only add if pair is not in known pairs (truly new)
+                                if pair not in self.known_pairs:
+                                    event = LaunchEvent(
+                                        symbol=symbol,
+                                        trading_pair=pair,
+                                        listing_time=listing_time,
+                                        source="bybit_api_v5",
+                                        metadata={
+                                            'instrument': instrument,
+                                            'discovered_at': datetime.utcnow().isoformat()
+                                        }
+                                    )
+                                    events.append(event)
+                                    logger.info(f"  ✅ Found upcoming listing: {pair} at {listing_time}")
+                                else:
+                                    logger.debug(f"  ⏭️  Skipping {pair} (already known)")
                 
         except httpx.HTTPError as e:
             logger.debug(f"HTTP error fetching upcoming listings: {e}")
