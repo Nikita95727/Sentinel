@@ -2,7 +2,6 @@
 Launch Sniper module implementing TradingModule interface.
 """
 import asyncio
-import logging
 import sys
 from pathlib import Path
 from typing import Optional
@@ -10,11 +9,10 @@ from typing import Optional
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+from loguru import logger
 from core.models import TradingModule, ModuleStatus, CoreContext
 from modules.launch_sniper.core.orchestrator import LaunchSniperOrchestrator
 from modules.launch_sniper.config import LaunchSniperConfig
-
-logger = logging.getLogger(__name__)
 
 
 class LaunchSniperModule(TradingModule):
